@@ -1,6 +1,6 @@
 {
   "name": "codex-experience-kit",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "Standalone and embeddable Experience SDK, CLI, sandbox runtime, and project toolchain for Codex desktop.",
   "type": "module",
   "license": "MIT",

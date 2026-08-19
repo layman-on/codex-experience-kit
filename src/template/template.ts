@@ -277,7 +277,7 @@ function basePackage(packageName: string, selected: ExperienceProjectFramework):
     },
     dependencies,
     devDependencies: {
-      "codex-experience-kit": "^0.6.11",
+      "codex-experience-kit": "^0.6.12",
       typescript: "^5.9.2",
       vite: "^6.1.0",
       ...frameworkDevDependencies,

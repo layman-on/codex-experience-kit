@@ -35,7 +35,7 @@ describe("Experience project starter", () => {
     });
     expect(packageJson.dependencies).toHaveProperty("react");
     expect(packageJson.devDependencies).toHaveProperty("vite");
-    expect(packageJson.devDependencies).toHaveProperty("codex-experience-kit", "^0.6.11");
+    expect(packageJson.devDependencies).toHaveProperty("codex-experience-kit", "^0.6.12");
     expect(packageJson.devDependencies).not.toHaveProperty("@vitejs/plugin-vue");
     expect(strFromU8(zip["AGENTS.md"]!)).toContain("Experience project instructions");
     expect(strFromU8(zip["src/codex-experience.d.ts"]!)).toContain("remoteContentBackend");

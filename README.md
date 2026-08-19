@@ -4,6 +4,8 @@ Codex Experience Kit is a standalone CLI and embeddable SDK for sandboxed HTML e
 
 An external host is not required. The npm package itself can build, preview, apply, hot-refresh, patch, inspect, and cancel an Experience. It has no daemon, separate login, profile, or Dock icon. Applications may embed the same public APIs as an optional UI.
 
+Upgrading from the deprecated `codex-theme-kit` package requires a project-format and API migration, not only a dependency rename. See [Migrating from `codex-theme-kit`](docs/migrating-from-codex-theme-kit.md).
+
 ## Create a project
 
 ```bash
@@ -220,7 +222,7 @@ The endpoint is never discovered automatically. Loopback is required by default;
 ## Optional host integration
 
 ```bash
-npm install --save-exact codex-experience-kit@0.6.11
+npm install --save-exact codex-experience-kit@0.6.12
 ```
 
 ```ts
@@ -292,4 +294,4 @@ Renderer selector research and the explicit loopback-CDP lifecycle were informed
 
 Codex Experience Kit is an independent, unofficial project. It is not affiliated with or endorsed by OpenAI. Codex and related marks belong to their respective owners.
 
-See [direct usage](docs/direct-usage.zh-CN.md), [architecture](docs/architecture.md), [project format](docs/experience-format.md), [runtime contract](docs/experience-runtime-v1.zh-CN.md), [optional host integration](docs/host-integration.md), [AI rules](docs/ai-experience-generation.zh-CN.md), [open-source compliance](docs/open-source-compliance.md), and [security](SECURITY.md).
+See [migration from `codex-theme-kit`](docs/migrating-from-codex-theme-kit.md), [direct usage](docs/direct-usage.zh-CN.md), [architecture](docs/architecture.md), [project format](docs/experience-format.md), [runtime contract](docs/experience-runtime-v1.zh-CN.md), [optional host integration](docs/host-integration.md), [AI rules](docs/ai-experience-generation.zh-CN.md), [open-source compliance](docs/open-source-compliance.md), and [security](SECURITY.md).

@@ -13,7 +13,7 @@ codex-experience cancel
 ## Dependency
 
 ```bash
-npm install --save-exact codex-experience-kit@0.6.11
+npm install --save-exact codex-experience-kit@0.6.12
 ```
 
 The Electron main process dynamically imports `codex-experience-kit/node`. The settings renderer bundles `codex-experience-kit/preview` and `codex-experience-kit/utils`.
@@ -131,5 +131,5 @@ The host may export `readExperienceAiGuide()` and open `EXPERIENCE_GALLERY_URL`.
 
 1. Experience Kit: `npm run check && npm run test:simulation && npm run pack:check`.
 2. Host application: run its type checks, tests, and production build.
-3. Verify the packaged application contains exactly `codex-experience-kit@0.6.11` and its production dependencies.
+3. Verify the packaged application contains exactly `codex-experience-kit@0.6.12` and its production dependencies.
 4. Use only synthetic preview/CDP during automated verification; never attach to a user's running Codex.

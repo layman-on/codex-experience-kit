@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.12 - 2026-08-19
+
+- Add a complete `codex-theme-kit` migration guide covering project structure, semantic surfaces, permissions, browser globals, TypeScript APIs, preview, storage, and rollout.
+- Point the README and published package metadata at the supported `codex-experience-kit` replacement workflow.
 
 - Reconcile persisted Codex sessions by process generation (`PID + start time + executable + CDP ownership`). Service restarts now reconnect the same renderer, while Codex restarts automatically invalidate impossible stale injections instead of leaving development Apply stuck in recovery.
 
