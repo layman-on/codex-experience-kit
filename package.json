@@ -1,0 +1,99 @@
+{
+  "name": "codex-experience-kit",
+  "version": "0.6.11",
+  "description": "Standalone and embeddable Experience SDK, CLI, sandbox runtime, and project toolchain for Codex desktop.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Codex Experience Kit contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/layman-on/codex-experience-kit.git"
+  },
+  "homepage": "https://github.com/layman-on/codex-experience-kit#readme",
+  "bugs": {
+    "url": "https://github.com/layman-on/codex-experience-kit/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE",
+    "NOTICE.md",
+    "SECURITY.md"
+  ],
+  "bin": {
+    "codex-experience-kit": "dist/cli.js",
+    "codex-experience": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/public.d.ts",
+      "import": "./dist/core/public.js"
+    },
+    "./node": {
+      "types": "./dist/node/public.d.ts",
+      "import": "./dist/node/public.js"
+    },
+    "./preview": {
+      "types": "./dist/preview/index.d.ts",
+      "import": "./dist/preview/index.js"
+    },
+    "./service": {
+      "types": "./dist/service/index.d.ts",
+      "import": "./dist/service/index.js"
+    },
+    "./utils": {
+      "types": "./dist/utils/index.d.ts",
+      "import": "./dist/utils/index.js"
+    },
+    "./template": {
+      "types": "./dist/template/index.d.ts",
+      "import": "./dist/template/index.js"
+    }
+  },
+  "scripts": {
+    "clean": "rm -rf dist coverage",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/mark-cli-executable.mjs",
+    "test": "vitest run",
+    "test:simulation": "vitest run tests/experience-project-cdp.test.ts tests/experience-engine.test.ts tests/codex-experience-runtime.test.ts",
+    "compliance:check": "node scripts/check-package-compliance.mjs",
+    "check": "npm run typecheck && npm run test && npm run build && npm run compliance:check",
+    "pack:check": "npm run compliance:check"
+  },
+  "engines": {
+    "node": ">=18.18"
+  },
+  "dependencies": {
+    "@noble/hashes": "^1.8.0",
+    "fflate": "^0.8.2",
+    "parse5": "^7.3.0",
+    "ws": "^8.18.3",
+    "yauzl": "^3.2.0"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@types/ws": "^8.18.1",
+    "@types/yauzl": "^2.10.3",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "jsdom": "^26.1.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "typescript": "^5.9.2",
+    "vite": "^6.4.3",
+    "vitest": "^3.2.4",
+    "vue": "^3.5.41"
+  }
+}
