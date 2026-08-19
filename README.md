@@ -49,6 +49,7 @@ Commands:
 - `npm run build`: bundle framework source with the project-local Vite and compile it into the fixed runtime contract in `dist/`.
 - `npm run check`: validate the built package, surfaces, assets, permissions, and sandbox rules.
 - `npm run pack`: create an importable ZIP in `releases/`.
+- `npm run targets`: list every running Codex instance, its connection readiness, and which instance is already connected.
 - `npm run apply`: build and directly apply the current project to Codex.
 - `npm run appearance -- --seed '#008577' --appearance dark`: patch only the live appearance.
 - `npm run status`: inspect the package-owned runtime state.
@@ -58,14 +59,47 @@ Secondary-account data is persistent. `codex-experience instance status` inspect
 
 The generated documentation tells an AI what it must ask the user for, how placement works, which assets are missing, and how to verify Light/Dark, interaction, motion, and reading safety.
 
-Opening the preview is synthetic and does not connect to Codex. `Underlay` and `Overlay` visibility controls affect only the preview and never alter the built Experience. Clicking `Apply to Codex` is an explicit real operation: the preview rebuilds the project, passes the same generated Light/Dark tokens to the package-owned runtime, and asks for confirmation if the first connection requires a restart. `Restore` transactionally cancels the active Experience.
+Opening the preview is synthetic and does not connect to Codex. `Underlay` and `Overlay` visibility controls affect only the preview and never alter the built Experience. The toolbar discovers all running Codex instances, marks the connected one, and requires an explicit target when more than one is available. Clicking `Apply to Codex` is an explicit real operation: the preview rebuilds the project, passes the same generated Light/Dark tokens to the package-owned runtime, and asks for confirmation if the selected instance requires a restart. `Restore` transactionally cancels the active Experience.
+
+A project may opt into package-owned preview tools without adding them to its Experience:
+
+```json
+{
+  "preview": {
+    "tools": ["codex-secondary-instance"]
+  }
+}
+```
+
+This adds a left-side Settings entry for the fixed isolated second-account workflow. Its configuration picker defaults capabilities, MCP, Skills, Plugins, and other recognized configuration on; conversations remain off until selected by group or task. The preview header, dialog, local control endpoints, and filesystem/process privileges belong to the trusted Kit dev server. They are never emitted into `dist`, never become a surface, and do not add Experience manifest permissions.
+
+## Runnable example
+
+[`example`](example) is a complete React Experience that demonstrates an edge-only underlay, a scoped interactive overlay, generated appearance tokens, selected-task context, and lifecycle events. It uses synthetic task data in preview and does not connect to Codex unless you explicitly click `Apply to Codex`.
+
+```bash
+npm install
+npm run build
+cd example
+npm install
+npm run dev
+```
+
+The example depends on the repository checkout through `file:..`, so changes to the Kit can be tested locally before publishing. Run `npm run example:check` from the repository root to typecheck, build, and validate it without connecting to Codex.
 
 ## Apply directly to Codex
 
 From an initialized Experience project:
 
 ```bash
+npm run targets
 npm run apply
+```
+
+When several Codex instances are running, select one explicitly:
+
+```bash
+npm run apply -- --target profile-a1b2c3d4e5f6
 ```
 
 The first connection may require one confirmed Codex restart. The command never restarts automatically; after saving current work, explicitly grant that operation:
@@ -81,7 +115,8 @@ The package CLI also works outside an authoring project:
 ```bash
 codex-experience install ./releases/example.experience-0.1.0.zip
 codex-experience list
-codex-experience apply example.experience --seed '#6750A4' --appearance light
+codex-experience targets
+codex-experience apply example.experience --target primary --seed '#6750A4' --appearance light
 codex-experience appearance --seed '#008577' --appearance dark
 codex-experience status
 codex-experience cancel
@@ -252,7 +287,12 @@ For a default-path, high-level Node API that matches the standalone CLI:
 import { CodexExperienceRuntime } from "codex-experience-kit/node";
 
 const runtime = new CodexExperienceRuntime();
-await runtime.apply("./example-experience", { allowRestart: true });
+const instances = await runtime.listCodexInstances();
+const target = instances.find((instance) => instance.connected) ?? instances[0];
+await runtime.apply("./example-experience", {
+  targetId: target?.id ?? "primary",
+  allowRestart: true,
+});
 await runtime.patchAppearance({ seed: "#008577", appearance: "dark" });
 await runtime.cancel();
 await runtime.shutdown();
@@ -284,7 +324,7 @@ Normal import copies a validated immutable snapshot. Direct project application 
 
 ## Codex connection
 
-Application uses an explicit loopback CDP connection to the official signed Codex process. Establishing that connection may require one confirmed restart. The runtime selects the primary Codex renderer rather than auxiliary windows such as the avatar overlay, and can safely adopt an already-running loopback CDP session after verifying both the signed process and endpoint ownership. Once connected, Experience switching, token patching, selected-task context, renderer-visible lifecycle updates, and cancellation are hot operations and use the original Codex profile, login, tasks, and conversations. An optional App Server provider accepts only an explicit endpoint and is never discovered or attached during tests.
+Application uses an explicit loopback CDP connection to an official signed Codex process. The runtime enumerates every verified main process, assigns a stable instance id from its isolated profile, distinguishes primary, Kit-managed secondary, and custom profiles, and marks the exact PID/process generation currently connected. A single instance is selected automatically; multiple instances require an explicit target in the preview, CLI, or Node API. Establishing the connection may require one confirmed restart of the selected restartable instance only; other instances remain open. The runtime selects that instance's primary Codex renderer rather than auxiliary windows such as the avatar overlay, and can adopt its existing loopback CDP endpoint only after verifying process and endpoint ownership. Once connected, Experience switching, token patching, selected-task context, renderer-visible lifecycle updates, and cancellation are hot operations and use that instance's own profile, login, tasks, and conversations. An optional App Server provider accepts only an explicit endpoint and is never discovered or attached during tests.
 
 All real-Codex mutations are transactional. The normal suite uses synthetic DOM and CDP servers. A separate external-CDP fixture exercises an isolated Electron renderer with Codex-equivalent CSP and the complete demo artifact. Neither path connects to the user's running Codex, and neither is described as a successful official-Codex application.
 

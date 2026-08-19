@@ -1,0 +1,186 @@
+.task-status-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  color: var(--cek-on-surface);
+  font: 13px/1.35 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.task-status-trigger,
+.task-status-panel {
+  pointer-events: auto;
+  position: absolute;
+  right: 18px;
+  border: 1px solid color-mix(in srgb, var(--cek-outline) 78%, transparent);
+  background: color-mix(in srgb, var(--cek-surface-raised) 92%, transparent);
+  box-shadow: 0 16px 44px color-mix(in srgb, var(--cek-scrim) 42%, transparent);
+  backdrop-filter: blur(18px) saturate(1.16);
+}
+
+.task-status-trigger {
+  top: 14px;
+  display: grid;
+  grid-template-columns: auto minmax(120px, 210px) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 7px 12px;
+  border-radius: 18px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.task-status-trigger:hover {
+  background: color-mix(in srgb, var(--cek-surface-hover) 94%, transparent);
+}
+
+.trigger-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.trigger-copy strong,
+.trigger-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trigger-copy small {
+  color: var(--cek-on-surface-muted);
+}
+
+.trigger-chevron {
+  color: var(--cek-primary);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.status-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--cek-outline-strong);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--cek-outline) 28%, transparent);
+}
+
+.status-working { background: var(--cek-primary); }
+.status-waiting,
+.status-waiting-input { background: var(--cek-primary-hover); }
+.status-waiting-approval { background: var(--cek-primary-pressed); }
+.status-completed,
+.status-idle { background: var(--cek-primary-container); }
+.status-failed,
+.status-interrupted { background: var(--cek-outline-strong); }
+
+.task-status-panel {
+  top: 72px;
+  width: min(330px, calc(100vw - 36px));
+  max-height: min(440px, calc(100vh - 92px));
+  overflow: auto;
+  border-radius: 22px;
+}
+
+.task-status-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 17px 18px 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--cek-outline) 50%, transparent);
+}
+
+.task-status-panel p,
+.task-status-panel h2 {
+  margin: 0;
+}
+
+.task-status-panel header p {
+  color: var(--cek-on-surface-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.task-status-panel h2 {
+  font-size: 17px;
+}
+
+.connection {
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: var(--cek-surface-selected);
+  color: var(--cek-on-primary-container);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.task-status-panel ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 10px;
+  list-style: none;
+}
+
+.task-status-panel li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 10px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--cek-surface-hover) 46%, transparent);
+}
+
+.task-status-panel li span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+}
+
+.task-status-panel li strong,
+.task-status-panel li small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-status-panel li small {
+  color: var(--cek-on-surface-muted);
+}
+
+.task-status-panel li em {
+  color: var(--cek-primary);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+}
+
+.empty-state {
+  padding: 22px 18px;
+  color: var(--cek-on-surface-muted);
+}
+
+.task-status-panel footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 18px 14px;
+  border-top: 1px solid color-mix(in srgb, var(--cek-outline) 50%, transparent);
+  color: var(--cek-on-surface-muted);
+  font-size: 11px;
+}
+
+.task-status-panel footer span {
+  color: var(--cek-primary);
+}
+
+@media (max-width: 560px) {
+  .task-status-trigger { right: 10px; top: 10px; }
+  .task-status-panel { right: 10px; top: 68px; width: calc(100vw - 20px); }
+}

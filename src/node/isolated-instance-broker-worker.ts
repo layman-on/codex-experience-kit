@@ -1,14 +1,14 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import path from "node:path";
 import { promisify } from "node:util";
 import { CdpClient, type CdpEvent } from "./cdp-client.js";
 import { syncCodexConversations } from "./codex-conversation-sync.js";
-import { discoverCodexTransferCatalog, transferCodexInstanceData } from "./codex-instance-transfer.js";
-import { installIsolatedCodexLauncher, openIsolatedCodexInstance, stopIsolatedCodexInstance } from "./isolated-codex-instance.js";
+import { stopIsolatedCodexInstance } from "./isolated-codex-instance.js";
+import { IsolatedCodexWorkflow } from "./isolated-codex-workflow.js";
 
 interface BrokerConfiguration {
   instanceId: string;
+  libraryPath: string;
   bindingName: string;
   profilePath: string;
   codexHomePath: string;
@@ -62,15 +62,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function waitForFile(filePath: string, timeoutMs: number): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await fs.access(filePath).then(() => true, () => false)) return;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  throw new Error("Secondary Codex did not initialize its local state database in time");
-}
-
 async function main(): Promise<void> {
   const configPath = process.argv[2];
   if (!configPath) throw new Error("Native action broker configuration is missing");
@@ -85,18 +76,13 @@ async function main(): Promise<void> {
       returnByValue: true,
     }).catch(() => undefined);
   };
-  const launchSecondary = async () => {
-    await installIsolatedCodexLauncher({
-      executablePath: configuration.codexExecutablePath,
-      profilePath: configuration.profilePath,
-      codexHomePath: configuration.codexHomePath,
-    });
-    return openIsolatedCodexInstance({
-      executablePath: configuration.codexExecutablePath,
-      profilePath: configuration.profilePath,
-      codexHomePath: configuration.codexHomePath,
-    });
-  };
+  const workflow = new IsolatedCodexWorkflow({
+    libraryPath: configuration.libraryPath,
+    executablePath: configuration.codexExecutablePath,
+    sourceCodexHome: configuration.sourceCodexHome,
+    confirmConversationTransfer: confirmConversationSync,
+  });
+  const launchSecondary = () => workflow.open();
   let launchOperation = Promise.resolve();
   const handleBinding = (event: CdpEvent): void => {
     if (event.params.name !== configuration.bindingName || typeof event.params.payload !== "string") return;
@@ -114,7 +100,7 @@ async function main(): Promise<void> {
       .then(async () => {
         if (payload.action === "codex.instance.transfer-catalog") {
           try {
-            const catalog = await discoverCodexTransferCatalog(configuration.sourceCodexHome, configuration.codexHomePath);
+            const catalog = await workflow.catalog();
             await sendResult(payload, "ok", catalog);
           } catch (error) {
             await sendResult(payload, "error", error);
@@ -122,8 +108,6 @@ async function main(): Promise<void> {
           return;
         }
         if (payload.action === "codex.instance.open-configured") {
-          let relaunched = false;
-          let secondaryStopped = false;
           try {
             if (!Array.isArray(payload.selectedItemIds) || !payload.selectedItemIds.every((value) => typeof value === "string")) {
               throw new Error("Configured instance selection is invalid");
@@ -133,34 +117,17 @@ async function main(): Promise<void> {
             if (selectedItemIds.includes("conversations") && (!Array.isArray(selectedConversationThreadIds) || selectedConversationThreadIds.length === 0 || !selectedConversationThreadIds.every((value) => typeof value === "string"))) {
               throw new Error("At least one conversation must be selected");
             }
-            if (selectedItemIds.includes("conversations") && !await confirmConversationSync((selectedConversationThreadIds as string[]).length)) {
+            const outcome = await workflow.openConfigured({
+              selectedItemIds,
+              ...(Array.isArray(selectedConversationThreadIds) ? { selectedConversationThreadIds: selectedConversationThreadIds as string[] } : {}),
+            });
+            if (outcome.status === "cancelled") {
               await sendResult(payload, "cancelled");
               return;
             }
-            await stopIsolatedCodexInstance(configuration.codexExecutablePath, configuration.profilePath);
-            secondaryStopped = true;
-            const destinationState = path.join(configuration.codexHomePath, "state_5.sqlite");
-            if (selectedItemIds.includes("conversations") && !await fs.access(destinationState).then(() => true, () => false)) {
-              await launchSecondary();
-              try { await waitForFile(destinationState, 20_000); }
-              finally { await stopIsolatedCodexInstance(configuration.codexExecutablePath, configuration.profilePath); }
-            }
-            let result;
-            try {
-              result = await transferCodexInstanceData({
-                sourceCodexHome: configuration.sourceCodexHome,
-                destinationCodexHome: configuration.codexHomePath,
-                selectedItemIds,
-                ...(Array.isArray(selectedConversationThreadIds) ? { selectedConversationThreadIds: selectedConversationThreadIds as string[] } : {}),
-              });
-            } finally {
-              await launchSecondary();
-              relaunched = true;
-            }
-            await notifyConfiguredLaunch(result.selectedItemIds.length, result.copiedBytes, result.conversations !== null);
-            await sendResult(payload, "ok", result);
+            await notifyConfiguredLaunch(outcome.transfer.selectedItemIds.length, outcome.transfer.copiedBytes, outcome.transfer.conversations !== null);
+            await sendResult(payload, "ok", outcome.transfer);
           } catch (error) {
-            if (secondaryStopped && !relaunched) await launchSecondary().catch(() => undefined);
             await sendResult(payload, "error", error);
           }
           return;

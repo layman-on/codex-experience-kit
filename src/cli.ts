@@ -25,7 +25,7 @@ import {
 import { launchElectronExperiencePreview, type ElectronExperiencePreviewHandle } from "./node/electron-preview-launcher.js";
 
 const VALUE_FLAGS = new Set([
-  "--id", "--name", "--framework", "--port", "--library", "--seed", "--dark-seed", "--contrast", "--appearance",
+  "--id", "--name", "--framework", "--port", "--library", "--seed", "--dark-seed", "--contrast", "--appearance", "--target",
 ]);
 
 function flag(args: string[], name: string): string | undefined {
@@ -53,7 +53,8 @@ Authoring:
   pack [directory]
 
 Direct Codex control (an external host is not required):
-  apply [project|dist|zip|id] [--seed color] [--appearance light|dark] [--allow-restart] [--allow-unrestricted-remote-content]
+  targets
+  apply [project|dist|zip|id] [--target instance-id] [--seed color] [--appearance light|dark] [--allow-restart] [--allow-unrestricted-remote-content]
   appearance [--seed color] [--dark-seed color] [--contrast soft|standard|high] [--appearance light|dark]
   cancel
   status
@@ -204,14 +205,19 @@ try {
     } else if (!args.includes("--no-open")) openPreview(server.url);
     process.once("SIGINT", shutdown); process.once("SIGTERM", shutdown);
   } else if (command === "apply") {
+    const targetId = flag(args, "--target");
     const options: CodexExperienceDirectApplyOptions = {
       ...appearanceOptions(args),
+      ...(targetId ? { targetId } : {}),
       allowRestart: args.includes("--allow-restart"),
       replaceInstalled: args.includes("--replace"),
       allowUnrestrictedRemoteContent: args.includes("--allow-unrestricted-remote-content"),
     };
     const result = await withRuntime(args, (runtime) => runtime.apply(target, options));
     print(result, args.includes("--json"));
+  } else if (command === "targets") {
+    const instances = await withRuntime(args, (runtime) => runtime.listCodexInstances());
+    print(instances, true);
   } else if (command === "appearance") {
     const status = await withRuntime(args, (runtime) => runtime.patchAppearance(appearanceOptions(args)));
     print(status, args.includes("--json"));

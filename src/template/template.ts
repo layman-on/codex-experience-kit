@@ -39,6 +39,7 @@ Before changing this project, read README.md, EXPERIENCE-BRIEF.md, and docs/AI-G
 - Build with \`npm run build\`; validate with \`npm run check\`; preview with \`npm run dev\`.
 - For native remote-page preview, install project-local Electron once and run \`npm run dev:native -- --allow-unrestricted-remote-content\`.
 - Opening \`npm run dev\` is synthetic, but its Apply/Restore toolbar controls the user's real Codex. Automated preview checks must never click those controls.
+- When more than one Codex instance is running, use the preview target selector or \`npm run targets\` and pass \`--target <instance-id>\`; never guess which account should be modified.
 - \`npm run apply\` connects to the user's real Codex. Run it only when the user explicitly asks; pass \`--allow-restart\` only after they confirm current work is saved. Automated checks must remain synthetic.
 - Every configured surface has an explicit target and plane. Underlays are always passthrough. Use scoped overlays for small controls and register only their actual DOM elements.
 - Keep the center reading area transparent when EXPERIENCE-BRIEF.md asks for native Codex content.
@@ -73,7 +74,9 @@ This is a ${selected === "react" ? "React" : "Vue"} Codex Experience project. So
 
 \`npm run pack\` creates an importable ZIP in \`releases/\`.
 
-\`npm run apply\` builds and applies this project directly to Codex. The first connection may require \`npm run apply -- --allow-restart\`; later runs hot-refresh without another restart.
+\`npm run targets\` lists every running Codex instance and marks the one already connected to this Kit runtime.
+
+\`npm run apply\` builds and applies this project directly to Codex. If multiple instances are running, select one with \`npm run apply -- --target <instance-id>\`; the preview toolbar exposes the same selector. The first connection for the selected instance may require \`--allow-restart\`; later runs hot-refresh without another restart.
 
 Projects that explicitly request unrestricted remote content require \`npm run dev -- --allow-unrestricted-remote-content\` (browser fallback), \`npm run dev:native -- --allow-unrestricted-remote-content\` (native Electron preview), and \`npm run apply -- --allow-unrestricted-remote-content\`. This removes package WebView protections and must never be enabled for an untrusted project.
 
@@ -270,6 +273,7 @@ function basePackage(packageName: string, selected: ExperienceProjectFramework):
       build: "codex-experience build",
       check: "npm run typecheck && npm run build && codex-experience check",
       pack: "npm run check && codex-experience pack",
+      targets: "codex-experience targets",
       apply: "codex-experience apply .",
       appearance: "codex-experience appearance",
       status: "codex-experience status",

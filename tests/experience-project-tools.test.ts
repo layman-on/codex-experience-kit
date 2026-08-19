@@ -105,8 +105,13 @@ describe("Experience project toolchain", () => {
       expect(html).toContain("result.previewVersion");
       expect(html).toContain('data-plane-toggle="underlay"');
       expect(html).toContain('data-plane-toggle="overlay"');
-      expect(html).toContain("Underlay: shown");
-      expect(html).toContain("Overlay: shown");
+      expect(html).toContain('aria-label="Underlay shown"');
+      expect(html).toContain('aria-label="Overlay shown"');
+      expect(html).toContain('data-appearance-toggle');
+      expect(html).not.toContain('data-appearance="light"');
+      expect(html).not.toContain('data-appearance="dark"');
+      expect(html).not.toContain('<button class="preview-settings-button"');
+      expect(html).not.toContain('<div class="preview-settings-dialog"');
       expect(runtimeCreated).toBe(false);
     } finally {
       await server.close();
@@ -144,18 +149,84 @@ describe("Experience project toolchain", () => {
         const overlay = dom.window.document.querySelector<HTMLIFrameElement>('iframe[data-plane="overlay"]');
         const underlayButton = dom.window.document.querySelector<HTMLButtonElement>('[data-plane-toggle="underlay"]');
         const overlayButton = dom.window.document.querySelector<HTMLButtonElement>('[data-plane-toggle="overlay"]');
+        const appearanceButton = dom.window.document.querySelector<HTMLButtonElement>('[data-appearance-toggle]');
         expect(underlay?.hidden).toBe(false);
         expect(overlay?.hidden).toBe(false);
+        expect(underlayButton?.textContent).toBe("Underlay");
+        expect(overlayButton?.textContent).toBe("Overlay");
+        expect(underlayButton?.getAttribute("aria-pressed")).toBe("true");
+        expect(overlayButton?.getAttribute("aria-pressed")).toBe("true");
 
         underlayButton?.click();
         expect(underlay?.hidden).toBe(true);
         expect(overlay?.hidden).toBe(false);
         expect(underlayButton?.getAttribute("aria-pressed")).toBe("false");
+        expect(underlayButton?.getAttribute("aria-label")).toBe("Underlay hidden");
 
         overlayButton?.click();
         expect(underlay?.hidden).toBe(true);
         expect(overlay?.hidden).toBe(true);
         expect(overlayButton?.getAttribute("aria-pressed")).toBe("false");
+        expect(overlayButton?.getAttribute("aria-label")).toBe("Overlay hidden");
+
+        expect(appearanceButton?.textContent).toBe("☀");
+        expect(appearanceButton?.getAttribute("aria-pressed")).toBe("false");
+        appearanceButton?.click();
+        expect(appearanceButton?.textContent).toBe("☾");
+        expect(appearanceButton?.getAttribute("aria-pressed")).toBe("true");
+        appearanceButton?.click();
+        expect(appearanceButton?.textContent).toBe("☀");
+      } finally {
+        dom.window.close();
+      }
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("enables Apply as soon as the user selects one of several Codex instances", async () => {
+    const root = await project();
+    const server = await startExperienceDevServer(root, {
+      port: 0,
+      runtimeFactory: () => ({
+        async listCodexInstances() {
+          return [
+            { id: "primary", label: "Primary Codex", role: "primary", pid: 100, processStartedAt: "one", profilePath: null, debugPort: 9001, state: "connectable", connected: false, restartable: true },
+            { id: "secondary", label: "Secondary Codex", role: "secondary", pid: 200, processStartedAt: "two", profilePath: "/secondary", debugPort: 9002, state: "connectable", connected: false, restartable: true },
+          ];
+        },
+        async apply() { return { hotUpdated: true }; },
+        async cancel() { return { phase: "idle" }; },
+        async shutdown() {},
+      }),
+    });
+    try {
+      const html = await fetch(server.url).then((response) => response.text());
+      const dom = new JSDOM(html, {
+        runScripts: "dangerously",
+        pretendToBeVisual: true,
+        url: server.url,
+        beforeParse(window) {
+          window.fetch = ((input: RequestInfo | URL, init?: RequestInit) =>
+            fetch(new URL(String(input), server.url), init)) as typeof window.fetch;
+        },
+      });
+      try {
+        const select = dom.window.document.querySelector<HTMLSelectElement>('[data-codex-target]')!;
+        const apply = dom.window.document.querySelector<HTMLButtonElement>('[data-control="apply"]')!;
+        for (let attempt = 0; attempt < 40 && select.options.length < 3; attempt += 1) await delay(10);
+
+        expect(select.options.length).toBe(3);
+        expect(select.value).toBe("");
+        expect(apply.disabled).toBe(true);
+
+        select.value = "primary";
+        select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+        expect(apply.disabled).toBe(false);
+
+        select.value = "";
+        select.dispatchEvent(new dom.window.Event("change", { bubbles: true }));
+        expect(apply.disabled).toBe(true);
       } finally {
         dom.window.close();
       }
@@ -282,11 +353,47 @@ describe("Experience project toolchain", () => {
 
   it("routes protected preview controls through an injected runtime", async () => {
     const root = await project();
+    const configPath = path.join(root, "experience.config.json");
+    const config = JSON.parse(await fs.readFile(configPath, "utf8"));
+    config.preview = { tools: ["codex-secondary-instance"] };
+    await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     const calls: Array<{ kind: string; reference?: string; options?: unknown }> = [];
     let shutdowns = 0;
     const server = await startExperienceDevServer(root, {
       port: 0,
       runtimeFactory: () => ({
+        async listCodexInstances() {
+          return [
+            { id: "primary", label: "Primary Codex", role: "primary", pid: 100, processStartedAt: "one", profilePath: null, debugPort: 9001, state: "connectable", connected: false, restartable: true },
+            { id: "secondary", label: "Secondary Codex", role: "secondary", pid: 200, processStartedAt: "two", profilePath: "/secondary", debugPort: 9002, state: "connected", connected: true, restartable: true },
+          ];
+        },
+        async inspectSecondaryCodexInstance() {
+          calls.push({ kind: "secondary-status" });
+          return { slot: "secondary" as const, initialized: true, authenticated: false, running: false, pids: [], profilePath: "/secondary/profile", codexHomePath: "/secondary/home", launcherPath: "/Applications/Codex Secondary.app" };
+        },
+        async getSecondaryCodexTransferCatalog() {
+          calls.push({ kind: "secondary-catalog" });
+          return {
+            sourceCodexHome: "/primary/home",
+            destinationCodexHome: "/secondary/home",
+            items: [{ id: "config", label: "Config", category: "configuration" as const, paths: ["/primary/home/config.toml"], sizeBytes: 42, defaultSelected: true, description: "MCP config" }],
+            conversationGroups: [],
+            excludedPaths: [{ path: "/primary/home/auth.json", reason: "identity" }],
+          };
+        },
+        async openSecondaryCodexInstance() {
+          calls.push({ kind: "secondary-open" });
+          return { pid: 300, profilePath: "/secondary/profile", codexHomePath: "/secondary/home", launcherPath: "/Applications/Codex Secondary.app", reused: false };
+        },
+        async openConfiguredSecondaryCodexInstance(options) {
+          calls.push({ kind: "secondary-open-configured", options });
+          return {
+            status: "ok" as const,
+            transfer: { selectedItemIds: options.selectedItemIds, copiedPathCount: 1, copiedBytes: 42, backupDirectory: null, conversations: null },
+            instance: { pid: 300, profilePath: "/secondary/profile", codexHomePath: "/secondary/home", launcherPath: "/Applications/Codex Secondary.app", reused: false },
+          };
+        },
         async apply(reference, options) {
           calls.push({ kind: "apply", reference, options });
           if (!options.allowRestart) throw Object.assign(new Error("Restart confirmation is required"), { code: "direct/restart-confirmation-required" });
@@ -303,6 +410,10 @@ describe("Experience project toolchain", () => {
       const html = await fetch(server.url).then((response) => response.text());
       const token = /"controlToken":"([^"]+)"/u.exec(html)?.[1];
       expect(token).toBeTruthy();
+      expect(html).toContain('data-preview-settings');
+      expect(html).toContain('data-preview-settings-dialog');
+      expect(html).toContain("Codex 双开");
+      expect(html).toContain("此设置只属于预览工具，不会写入 Experience");
 
       const preflight = await fetch(new URL("/__experience/control/apply", server.url), {
         method: "OPTIONS",
@@ -332,6 +443,51 @@ describe("Experience project toolchain", () => {
       expect(denied.status).toBe(403);
       expect(calls).toHaveLength(0);
 
+      const instances = await fetch(new URL("/__experience/control/instances", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Codex-Experience-Control": token! },
+        body: "{}",
+      });
+      expect(instances.status).toBe(200);
+      expect(await instances.json()).toMatchObject({
+        instances: [
+          { id: "primary", connected: false },
+          { id: "secondary", connected: true },
+        ],
+      });
+
+      const secondaryStatus = await fetch(new URL("/__experience/control/secondary-status", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Codex-Experience-Control": token! },
+        body: "{}",
+      });
+      expect(secondaryStatus.status).toBe(200);
+      expect(await secondaryStatus.json()).toMatchObject({ instance: { slot: "secondary", initialized: true } });
+
+      const secondaryCatalog = await fetch(new URL("/__experience/control/secondary-catalog", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Codex-Experience-Control": token! },
+        body: "{}",
+      });
+      expect(secondaryCatalog.status).toBe(200);
+      expect(await secondaryCatalog.json()).toMatchObject({ catalog: { items: [{ id: "config", defaultSelected: true }] } });
+
+      const secondaryOpen = await fetch(new URL("/__experience/control/secondary-open", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Codex-Experience-Control": token! },
+        body: "{}",
+      });
+      expect(secondaryOpen.status).toBe(200);
+      expect(await secondaryOpen.json()).toMatchObject({ instance: { pid: 300, reused: false } });
+
+      const secondaryConfigured = await fetch(new URL("/__experience/control/secondary-open-configured", server.url), {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Codex-Experience-Control": token! },
+        body: JSON.stringify({ selectedItemIds: ["config"], selectedConversationThreadIds: [] }),
+      });
+      expect(secondaryConfigured.status).toBe(200);
+      expect(await secondaryConfigured.json()).toMatchObject({ status: "ok", transfer: { selectedItemIds: ["config"] } });
+
       const confirmation = await fetch(new URL("/__experience/control/apply", server.url), {
         method: "POST",
         headers: { "Content-Type": "application/json", "X-Codex-Experience-Control": token! },
@@ -343,18 +499,19 @@ describe("Experience project toolchain", () => {
       const applied = await fetch(new URL("/__experience/control/apply", server.url), {
         method: "POST",
         headers: { Origin: "http://127.0.0.1:5173", "Content-Type": "application/json", "X-Codex-Experience-Control": token! },
-        body: JSON.stringify({ appearance: "dark", allowRestart: true }),
+        body: JSON.stringify({ appearance: "dark", allowRestart: true, targetId: "secondary" }),
       });
       expect(applied.status).toBe(200);
       expect(applied.headers.get("access-control-allow-origin")).toBe("http://127.0.0.1:5173");
       expect(await applied.json()).toMatchObject({ hotUpdated: true, previewVersion: expect.any(Number) });
-      expect(calls[1]).toMatchObject({
+      const applyCall = calls.find((call) => call.kind === "apply" && (call.options as { allowRestart?: boolean }).allowRestart === true);
+      expect(applyCall).toMatchObject({
         kind: "apply",
         reference: path.join(await fs.realpath(root), "dist"),
-        options: { appearance: "dark", allowRestart: true },
+        options: { appearance: "dark", allowRestart: true, targetId: "secondary" },
       });
-      expect((calls[1]?.options as { tokens: { light: unknown; dark: unknown } }).tokens).toHaveProperty("light");
-      expect((calls[1]?.options as { tokens: { light: unknown; dark: unknown } }).tokens).toHaveProperty("dark");
+      expect((applyCall?.options as { tokens: { light: unknown; dark: unknown } }).tokens).toHaveProperty("light");
+      expect((applyCall?.options as { tokens: { light: unknown; dark: unknown } }).tokens).toHaveProperty("dark");
 
       const cancelled = await fetch(new URL("/__experience/control/cancel", server.url), {
         method: "POST",
@@ -363,7 +520,13 @@ describe("Experience project toolchain", () => {
       });
       expect(cancelled.status).toBe(200);
       expect(calls.at(-1)).toEqual({ kind: "cancel" });
-      expect(shutdowns).toBe(3);
+      expect(calls).toEqual(expect.arrayContaining([
+        { kind: "secondary-status" },
+        { kind: "secondary-catalog" },
+        { kind: "secondary-open" },
+        { kind: "secondary-open-configured", options: { selectedItemIds: ["config"] } },
+      ]));
+      expect(shutdowns).toBe(8);
     } finally {
       await server.close();
     }

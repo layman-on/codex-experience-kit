@@ -5,7 +5,8 @@ A graphical host is optional, not a runtime prerequisite. `codex-experience-kit`
 The direct equivalent is:
 
 ```bash
-codex-experience apply ./example-experience --allow-restart
+codex-experience targets
+codex-experience apply ./example-experience --target primary --allow-restart
 codex-experience appearance --seed '#008577' --appearance dark
 codex-experience cancel
 ```
@@ -32,6 +33,8 @@ const engine = new ExperienceEngine({
 });
 await engine.initialize();
 ```
+
+Before applying, call `engine.listCodexInstances()`. It returns every verified running main instance with a stable id, role, process generation, CDP readiness, and a `connected` flag. Pass the selected id as `targetId` to `applyProject()` or `CodexExperienceRuntime.apply()`. A host may auto-select only when exactly one instance exists; with multiple instances it must ask the user. Restart consent applies only to the selected restartable instance, and a custom-profile instance without a reusable CDP endpoint is reported as unavailable rather than restarted with guessed arguments.
 
 Keep file dialogs and raw paths in the main process. Renderer IPC accepts only validated Experience IDs, complete token modes, Light/Dark appearance, and bounded commands.
 

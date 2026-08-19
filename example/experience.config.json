@@ -1,0 +1,30 @@
+{
+  "sourceDir": "src",
+  "outDir": "dist",
+  "assetsDir": "assets",
+  "appearance": {
+    "seed": "#6650A4",
+    "contrast": "standard"
+  },
+  "preview": {
+    "tools": [
+      "codex-secondary-instance"
+    ]
+  },
+  "authoring": {
+    "framework": "react",
+    "entry": "main.tsx",
+    "surfaces": [
+      {
+        "target": "app-shell",
+        "plane": "underlay",
+        "interaction": "passthrough"
+      },
+      {
+        "target": "app-shell",
+        "plane": "overlay",
+        "interaction": "scoped"
+      }
+    ]
+  }
+}

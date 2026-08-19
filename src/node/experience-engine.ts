@@ -17,6 +17,7 @@ import {
   MacOSCodexSessionProvider,
   type CodexSessionConnection,
   type CodexSessionGeneration,
+  type CodexSessionInstance,
   type CodexSessionPlan,
   type CodexSessionProvider,
   type CodexSessionRecord,
@@ -36,6 +37,7 @@ export interface ExperienceRuntimeStatus {
   recoveryRequired: boolean;
   codexAppAvailable: boolean;
   sessionState: "disconnected" | "ready";
+  codexInstanceId: string | null;
   codexProcessGeneration: CodexSessionGeneration;
 }
 
@@ -51,6 +53,7 @@ export interface ExperienceEngineOptions {
 export interface ApplyExperienceProjectOptions {
   tokens: AppearanceTokenModes;
   appearance?: "light" | "dark";
+  targetId?: string;
   allowRestart?: boolean;
   allowUnrestrictedRemoteContent?: boolean;
 }
@@ -124,6 +127,7 @@ export class ExperienceEngine {
   private status: ExperienceRuntimeStatus = {
     phase: "idle", projectId: null, projectKind: null, operation: 0, error: null,
     recoveryRequired: false, codexAppAvailable: false, sessionState: "disconnected",
+    codexInstanceId: null,
     codexProcessGeneration: "unknown",
   };
 
@@ -132,7 +136,7 @@ export class ExperienceEngine {
     const nativeActionsEnabled = options.sessionProvider === undefined;
     this.library = new ExperienceProjectLibrary(options.libraryPath);
     this.development = new ExperienceDevelopmentRegistry(options.libraryPath);
-    this.provider = options.sessionProvider ?? new MacOSCodexSessionProvider();
+    this.provider = options.sessionProvider ?? new MacOSCodexSessionProvider({ libraryPath: options.libraryPath });
     this.statePath = options.statePath ?? path.join(options.libraryPath, "experience-engine-state.json");
     this.lockPath = path.join(options.libraryPath, ".experience-engine.lock");
     this.timeout = options.targetDiscoveryTimeoutMs ?? 20_000;
@@ -177,6 +181,24 @@ export class ExperienceEngine {
   getStatus(): ExperienceRuntimeStatus { return { ...this.status }; }
   requiresRecovery(): boolean { return this.status.recoveryRequired; }
   hasLiveTransaction(): boolean { return this.busy; }
+
+  async listCodexInstances(): Promise<CodexSessionInstance[]> {
+    await this.ensureInitialized();
+    if (this.provider.listInstances) return this.provider.listInstances(this.session);
+    if (!this.session) return [];
+    return [{
+      id: this.session.instanceId ?? `pid-${this.session.pid}`,
+      label: "Connected Codex",
+      role: this.session.instanceRole ?? "primary",
+      pid: this.session.pid,
+      processStartedAt: this.session.processStartedAt,
+      profilePath: this.session.profilePath ?? null,
+      debugPort: this.session.port,
+      state: this.target ? "connected" : "connectable",
+      connected: Boolean(this.target),
+      restartable: this.session.instanceRole !== "custom",
+    }];
+  }
 
   async reconcile(): Promise<ExperienceRuntimeStatus> {
     return this.exclusive(async () => {
@@ -234,16 +256,16 @@ export class ExperienceEngine {
     await this.development.removeProject(id);
   }
 
-  async planApply(projectId: string): Promise<ExperienceProjectApplyPlan> {
+  async planApply(projectId: string, targetId?: string): Promise<ExperienceProjectApplyPlan> {
     await this.ensureInitialized();
     await this.library.loadProject(projectId);
-    return this.planSelection("installed", projectId);
+    return this.planSelection("installed", projectId, targetId);
   }
 
-  async planApplyDevelopment(projectId: string): Promise<ExperienceProjectApplyPlan> {
+  async planApplyDevelopment(projectId: string, targetId?: string): Promise<ExperienceProjectApplyPlan> {
     await this.ensureInitialized();
     await this.development.loadProject(projectId);
-    return this.planSelection("development", projectId);
+    return this.planSelection("development", projectId, targetId);
   }
 
   async applyProject(projectId: string, options: ApplyExperienceProjectOptions): Promise<ExperienceRuntimeStatus> {
@@ -263,6 +285,26 @@ export class ExperienceEngine {
       await this.ensureInitialized();
       const project = await this.loadSelection(projectKind, projectId);
       this.assertRemoteContentGrant(project, options.allowUnrestrictedRemoteContent);
+      const currentInstanceId = this.session?.instanceId ?? null;
+      const switchingTarget = Boolean(options.targetId && currentInstanceId && options.targetId !== currentInstanceId);
+      if (switchingTarget) {
+        if (this.target && this.receipt) await this.target.cancel(this.receipt);
+        await this.target?.close().catch(() => undefined);
+        this.target = null;
+        this.session = null;
+        this.receipt = null;
+        this.active = null;
+        this.update({
+          phase: "idle",
+          projectId: null,
+          projectKind: null,
+          recoveryRequired: false,
+          sessionState: "disconnected",
+          codexInstanceId: null,
+          error: null,
+        });
+        await this.persist();
+      }
       const operation = this.status.operation + 1;
       this.update({ phase: "applying", projectId, projectKind, operation, error: null });
       const abort = new AbortController();
@@ -274,6 +316,7 @@ export class ExperienceEngine {
         if (!this.target) {
           const connection = await this.provider.acquire({
             previous: this.session,
+            ...(options.targetId ? { targetId: options.targetId } : {}),
             allowRestart: options.allowRestart ?? false,
             timeoutMs: this.timeout,
             signal: abort.signal,
@@ -470,8 +513,8 @@ export class ExperienceEngine {
       try {
         if (this.target) await this.target.cancel(this.receipt);
         else if (this.active) {
-          const plan = await this.provider.plan(this.session);
-          if (plan.codexRunning) await this.provider.restartWithoutDebugging();
+          const plan = await this.provider.plan(this.session, this.session?.instanceId);
+          if (plan.codexRunning) await this.provider.restartWithoutDebugging(undefined, this.session);
           this.session = null;
         }
         this.receipt = null;
@@ -498,8 +541,12 @@ export class ExperienceEngine {
     }
   }
 
-  private async planSelection(projectKind: ExperienceProjectSourceKind, projectId: string): Promise<ExperienceProjectApplyPlan> {
-    if (this.target && this.session) {
+  private async planSelection(
+    projectKind: ExperienceProjectSourceKind,
+    projectId: string,
+    targetId?: string,
+  ): Promise<ExperienceProjectApplyPlan> {
+    if (this.target && this.session && (!targetId || targetId === this.session.instanceId)) {
       return {
         projectId,
         projectKind,
@@ -507,12 +554,20 @@ export class ExperienceEngine {
         reusableSession: true,
         codexRunning: true,
         requiresRestart: false,
+        requiresTargetSelection: false,
+        selectedInstanceId: this.session.instanceId ?? null,
+        instances: await this.listCodexInstances(),
         hotSwitch: true,
       };
     }
-    const plan = await this.provider.plan(this.session);
+    const plan = await this.provider.plan(this.session, targetId);
     this.update({ codexAppAvailable: plan.codexAppAvailable });
-    return { ...plan, projectId, projectKind, hotSwitch: plan.reusableSession };
+    return {
+      ...plan,
+      projectId,
+      projectKind,
+      hotSwitch: plan.reusableSession && (!this.session || plan.selectedInstanceId === this.session.instanceId),
+    };
   }
 
   private loadSelection(projectKind: ExperienceProjectSourceKind, projectId: string): Promise<ExperienceProjectBundle> {
@@ -535,7 +590,11 @@ export class ExperienceEngine {
     const target = this.targetFactory(connection.webSocketUrl, connection);
     this.target = target;
     this.session = { ...connection.record };
-    this.update({ sessionState: "ready", codexProcessGeneration: "same" });
+    this.update({
+      sessionState: "ready",
+      codexInstanceId: connection.record.instanceId ?? null,
+      codexProcessGeneration: "same",
+    });
     if (this.active) {
       const probe = await target.probe().catch(() => null);
       if (probe?.projectId === this.active.runtimeProjectId && probe.digest === this.active.digest) {
@@ -617,6 +676,7 @@ export class ExperienceEngine {
         error: null,
         recoveryRequired: false,
         sessionState: "disconnected",
+        codexInstanceId: null,
         codexProcessGeneration: result.generation,
       });
     } else {

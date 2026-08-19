@@ -1,0 +1,13 @@
+{
+  "apiVersion": 1,
+  "id": "example.task-aware-react",
+  "name": "example",
+  "version": "0.1.0",
+  "entry": "index.html",
+  "permissions": [
+    "appearance.tokens",
+    "codex.context.active",
+    "codex.context.metadata",
+    "codex.events.lifecycle"
+  ]
+}

@@ -12,5 +12,6 @@ export * from "./electron-webcontents-view-host.js";
 export * from "./electron-preview-launcher.js";
 export { EXPERIENCE_GALLERY_URL, readExperienceAiGuide } from "./experience-resources.js";
 export * from "./isolated-codex-instance.js";
+export * from "./isolated-codex-workflow.js";
 export * from "./codex-conversation-sync.js";
 export * from "./codex-instance-transfer.js";

@@ -2,6 +2,8 @@
 
 ## 0.6.12 - 2026-08-19
 
+- Add declarative preview-only tools and enable a left-header second-account settings dialog in the tracked example. It reuses the package-owned isolated-instance workflow, defaults capability/config transfer on and conversations off, and is provably excluded from the built Experience and its permissions.
+- Discover every running official Codex instance, expose stable target ids and connected/readiness states in the preview, CLI, and Node API, require explicit selection when several are running, and restrict confirmed restarts to the selected Kit-restartable instance.
 - Add a complete `codex-theme-kit` migration guide covering project structure, semantic surfaces, permissions, browser globals, TypeScript APIs, preview, storage, and rollout.
 - Point the README and published package metadata at the supported `codex-experience-kit` replacement workflow.
 

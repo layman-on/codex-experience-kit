@@ -1,0 +1,39 @@
+.example-background {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.edge-glow {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: min(24vw, 360px);
+  opacity: 0.72;
+}
+
+.edge-glow-left {
+  left: 0;
+  background:
+    radial-gradient(circle at 0 20%, color-mix(in srgb, var(--cek-primary) 24%, transparent), transparent 58%),
+    linear-gradient(90deg, color-mix(in srgb, var(--cek-primary-container) 44%, transparent), transparent);
+}
+
+.edge-glow-right {
+  right: 0;
+  background:
+    radial-gradient(circle at 100% 78%, color-mix(in srgb, var(--cek-primary) 28%, transparent), transparent 60%),
+    linear-gradient(270deg, color-mix(in srgb, var(--cek-surface-selected) 50%, transparent), transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .edge-glow {
+    animation: edge-breathe 8s ease-in-out infinite alternate;
+  }
+}
+
+@keyframes edge-breathe {
+  from { opacity: 0.55; }
+  to { opacity: 0.82; }
+}

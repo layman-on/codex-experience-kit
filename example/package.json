@@ -1,0 +1,27 @@
+{
+  "name": "codex-experience-task-aware-example",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "codex-experience dev",
+    "typecheck": "tsc --noEmit",
+    "build": "codex-experience build",
+    "check": "npm run typecheck && npm run build && codex-experience check",
+    "pack": "npm run check && codex-experience pack",
+    "targets": "codex-experience targets",
+    "apply": "codex-experience apply .",
+    "cancel": "codex-experience cancel"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "codex-experience-kit": "file:..",
+    "typescript": "^5.9.2",
+    "vite": "^6.4.3"
+  }
+}

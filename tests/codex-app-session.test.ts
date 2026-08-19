@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   codexMainPageTargetRank,
+  codexInstanceId,
   createCodexDebugArguments,
   createCodexLaunchEnvironment,
+  createCodexNewInstanceOpenArguments,
   createCodexOpenArguments,
   isCodexMainPageTarget,
   parseCodexLoopbackDebugPort,
+  parseCodexUserDataDirectory,
+  selectCodexSessionInstance,
 } from "../src/node/codex-app-session.js";
 
 describe("Codex macOS launch boundary", () => {
@@ -27,6 +31,16 @@ describe("Codex macOS launch boundary", () => {
     expect(createCodexOpenArguments("/Applications/ChatGPT.app")).toEqual([
       "-a",
       "/Applications/ChatGPT.app",
+    ]);
+  });
+
+  it("can explicitly launch another verified app instance", () => {
+    expect(createCodexNewInstanceOpenArguments("/Applications/Codex.app", ["--flag=value"])).toEqual([
+      "-n",
+      "-a",
+      "/Applications/Codex.app",
+      "--args",
+      "--flag=value",
     ]);
   });
 
@@ -76,5 +90,29 @@ describe("Codex macOS launch boundary", () => {
     expect(parseCodexLoopbackDebugPort(
       "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT --remote-debugging-address=0.0.0.0 --remote-debugging-port=53135",
     )).toBeNull();
+  });
+
+  it("derives stable instance ids from primary and profile launches", () => {
+    const profile = "/Users/example/Library/Application Support/CodexExperienceKit/isolated-instances/secondary/user-data";
+    expect(parseCodexUserDataDirectory(
+      `/Applications/Codex.app/Contents/MacOS/Codex --user-data-dir=${profile} --remote-debugging-address=127.0.0.1 --remote-debugging-port=53135`,
+    )).toBe(profile);
+    expect(codexInstanceId(null)).toBe("primary");
+    expect(codexInstanceId(profile)).toMatch(/^profile-[0-9a-f]{12}$/u);
+    expect(codexInstanceId(profile)).toBe(codexInstanceId(profile));
+  });
+
+  it("requires an explicit selection when multiple Codex instances exist", () => {
+    const instances = [
+      { id: "primary", label: "Primary Codex", role: "primary" as const, pid: 10, processStartedAt: "one", profilePath: null, debugPort: 9001, state: "connectable" as const, connected: false, restartable: true },
+      { id: "profile-abc", label: "Secondary Codex", role: "secondary" as const, pid: 20, processStartedAt: "two", profilePath: "/secondary", debugPort: 9002, state: "connected" as const, connected: true, restartable: true },
+    ];
+    expect(selectCodexSessionInstance(instances, null)).toBeNull();
+    expect(selectCodexSessionInstance(instances, null, "primary")?.pid).toBe(10);
+    expect(selectCodexSessionInstance(instances, {
+      origin: "http://127.0.0.1:9002", port: 9002, pid: 20, processStartedAt: "two",
+      appPath: "/Applications/Codex.app", executablePath: "/Applications/Codex.app/Contents/MacOS/Codex",
+      instanceId: "profile-abc",
+    })?.id).toBe("profile-abc");
   });
 });

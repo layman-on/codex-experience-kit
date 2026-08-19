@@ -26,7 +26,7 @@ npm run apply
 
 如果 manifest 申请 `codex.context.active` 或 `codex.events.lifecycle`，预览顶部还会显示 Task A、Task B 和 Complete other。它们只生成合成任务切换/后台完成事件，用来验证 Overlay 的动态表现，不读取任何真实 Codex 任务。
 
-预览中的应用按钮和 `npm run apply` 是同一种真实操作。第一次建立连接需要重启时，页面会先弹出确认，不会静默重启；取消确认则保持当前 Codex 不变。自动化预览测试不得点击应用或恢复按钮。
+预览中的应用按钮和 `npm run apply` 是同一种真实操作。工具栏会发现全部运行中的 Codex 实例，标明已经连接的实例；只有一个实例时自动选中，存在多个实例时必须由用户明确选择。第一次为所选实例建立连接需要重启时，页面会先弹出确认，不会静默重启；取消确认则保持当前 Codex 不变。其他 Codex 实例不会被关闭。自动化预览测试不得点击应用或恢复按钮。
 
 第一次建立连接可能需要重启 Codex。默认命令会停止并提示，不会自行重启；保存当前工作后显式执行：
 
@@ -35,6 +35,15 @@ npm run apply -- --allow-restart
 ```
 
 建立连接后，再次执行 `npm run apply` 会使用同一会话事务性热刷新。候选版本校验或应用失败时保留上一个有效版本。
+
+多实例时可先查看目标，再明确应用：
+
+```bash
+npm run targets
+npm run apply -- --target profile-a1b2c3d4e5f6
+```
+
+`targets` 返回稳定的 `id`、主实例/第二账号/自定义配置角色、PID、CDP 就绪状态，以及 `connected` 标记。自定义 user-data-dir 实例若没有现成 CDP 连接，Kit 不会猜测其启动参数或擅自重启。
 
 ## 受控远程页面
 
@@ -91,7 +100,8 @@ Runtime 不把持久化的 `active=true` 当作事实。每次启动以及 `stat
 ```bash
 codex-experience install ./example.experience-0.1.0.zip
 codex-experience list
-codex-experience apply example.experience --seed '#6750A4' --appearance light
+codex-experience targets
+codex-experience apply example.experience --target primary --seed '#6750A4' --appearance light
 codex-experience cancel
 ```
 
@@ -106,7 +116,12 @@ const runtime = new CodexExperienceRuntime({
   security: { allowUnrestrictedRemoteContent: true }
 });
 try {
-  await runtime.apply("./example-experience", { allowRestart: true });
+  const instances = await runtime.listCodexInstances();
+  const target = instances.find((instance) => instance.connected) ?? instances[0];
+  await runtime.apply("./example-experience", {
+    targetId: target?.id ?? "primary",
+    allowRestart: true,
+  });
   await runtime.patchAppearance({ seed: "#008577", appearance: "dark" });
 } finally {
   await runtime.shutdown();

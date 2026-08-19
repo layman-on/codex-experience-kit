@@ -66,8 +66,9 @@
     "build": "npm run clean && tsc -p tsconfig.build.json && node scripts/mark-cli-executable.mjs",
     "test": "vitest run",
     "test:simulation": "vitest run tests/experience-project-cdp.test.ts tests/experience-engine.test.ts tests/codex-experience-runtime.test.ts",
+    "example:check": "tsc --noEmit -p example/tsconfig.json && node dist/cli.js build example && node dist/cli.js check example",
     "compliance:check": "node scripts/check-package-compliance.mjs",
-    "check": "npm run typecheck && npm run test && npm run build && npm run compliance:check",
+    "check": "npm run typecheck && npm run test && npm run build && npm run example:check && npm run compliance:check",
     "pack:check": "npm run compliance:check"
   },
   "engines": {

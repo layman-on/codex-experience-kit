@@ -1,7 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { access, constants as fsConstants, realpath } from "node:fs/promises";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { basename, join, normalize } from "node:path";
 import { promisify } from "node:util";
 import { ExperienceKitError, errorMessage } from "../core/errors.js";
 import {
@@ -39,6 +40,9 @@ export interface CodexSessionRecord {
   processStartedAt: string;
   appPath: string;
   executablePath: string;
+  instanceId?: string;
+  instanceRole?: CodexSessionInstanceRole;
+  profilePath?: string | null;
 }
 
 export interface CodexSessionConnection {
@@ -52,6 +56,25 @@ export interface CodexSessionPlan {
   reusableSession: boolean;
   codexRunning: boolean;
   requiresRestart: boolean;
+  requiresTargetSelection?: boolean;
+  selectedInstanceId?: string | null;
+  instances?: CodexSessionInstance[];
+}
+
+export type CodexSessionInstanceRole = "primary" | "secondary" | "custom";
+export type CodexSessionInstanceState = "connected" | "connectable" | "restart-required" | "unavailable";
+
+export interface CodexSessionInstance {
+  id: string;
+  label: string;
+  role: CodexSessionInstanceRole;
+  pid: number;
+  processStartedAt: string;
+  profilePath: string | null;
+  debugPort: number | null;
+  state: CodexSessionInstanceState;
+  connected: boolean;
+  restartable: boolean;
 }
 
 export type CodexSessionGeneration = "same" | "replaced" | "exited" | "unknown";
@@ -68,6 +91,7 @@ export interface CodexSessionReconciliation {
 
 export interface AcquireCodexSessionOptions {
   previous: CodexSessionRecord | null;
+  targetId?: string;
   allowRestart: boolean;
   timeoutMs: number;
   signal: AbortSignal;
@@ -75,7 +99,8 @@ export interface AcquireCodexSessionOptions {
 
 export interface CodexSessionProvider {
   isAvailable(): Promise<boolean>;
-  plan(previous: CodexSessionRecord | null): Promise<CodexSessionPlan>;
+  listInstances?(previous: CodexSessionRecord | null): Promise<CodexSessionInstance[]>;
+  plan(previous: CodexSessionRecord | null, targetId?: string): Promise<CodexSessionPlan>;
   reconnect(previous: CodexSessionRecord, timeoutMs: number, signal?: AbortSignal): Promise<CodexSessionConnection | null>;
   reconcile?(
     previous: CodexSessionRecord,
@@ -83,7 +108,7 @@ export interface CodexSessionProvider {
     signal?: AbortSignal,
   ): Promise<CodexSessionReconciliation>;
   acquire(options: AcquireCodexSessionOptions): Promise<CodexSessionConnection>;
-  restartWithoutDebugging(signal?: AbortSignal): Promise<void>;
+  restartWithoutDebugging(signal?: AbortSignal, previous?: CodexSessionRecord | null): Promise<void>;
 }
 
 export function createCodexDebugArguments(port: number): string[] {
@@ -118,6 +143,43 @@ export function createCodexOpenArguments(appPath: string, appArguments: readonly
   ];
 }
 
+export function createCodexNewInstanceOpenArguments(appPath: string, appArguments: readonly string[] = []): string[] {
+  const args = createCodexOpenArguments(appPath, appArguments);
+  return ["-n", ...args];
+}
+
+export function parseCodexUserDataDirectory(command: string): string | null {
+  const value = command.match(/(?:^|\s)--user-data-dir(?:=|\s+)(.*?)(?=\s--[a-z0-9-]+(?:=|\s)|$)/iu)?.[1]?.trim();
+  return value ? normalize(value) : null;
+}
+
+export function codexInstanceId(profilePath: string | null): string {
+  if (!profilePath) return "primary";
+  return `profile-${createHash("sha256").update(normalize(profilePath)).digest("hex").slice(0, 12)}`;
+}
+
+export function selectCodexSessionInstance(
+  instances: readonly CodexSessionInstance[],
+  previous: CodexSessionRecord | null,
+  targetId?: string,
+): CodexSessionInstance | null {
+  if (targetId) {
+    if (targetId === "primary" && instances.length === 0) return null;
+    const selected = instances.find((instance) => instance.id === targetId);
+    if (!selected) throw new ExperienceKitError("codex/instance-not-found", `Codex instance was not found: ${targetId}`);
+    return selected;
+  }
+  if (previous) {
+    const selected = instances.find((instance) => (
+      (previous.instanceId ? instance.id === previous.instanceId : instance.pid === previous.pid)
+      && instance.pid === previous.pid
+      && instance.processStartedAt === previous.processStartedAt
+    ));
+    if (selected) return selected;
+  }
+  return instances.length === 1 ? instances[0]! : null;
+}
+
 export function codexMainPageTargetRank(target: CdpPageTargetInfo): number {
   let url: URL;
   try {
@@ -145,8 +207,31 @@ export function parseCodexLoopbackDebugPort(command: string): number | null {
   return Number.isSafeInteger(port) && port >= 1 && port <= 65_535 ? port : null;
 }
 
+interface RunningCodexInstance {
+  id: string;
+  label: string;
+  role: CodexSessionInstanceRole;
+  pid: number;
+  processStartedAt: string;
+  profilePath: string | null;
+  debugPort: number | null;
+  restartable: boolean;
+}
+
+export interface MacOSCodexSessionProviderOptions {
+  libraryPath?: string;
+  spawnProcess?: typeof spawn;
+}
+
 export class MacOSCodexSessionProvider implements CodexSessionProvider {
   private identity: CodexAppIdentity | null = null;
+  private readonly libraryPath: string | null;
+  private readonly spawnProcess: typeof spawn;
+
+  constructor(options: MacOSCodexSessionProviderOptions = {}) {
+    this.libraryPath = options.libraryPath ?? null;
+    this.spawnProcess = options.spawnProcess ?? spawn;
+  }
 
   async getIdentity(): Promise<CodexAppIdentity> {
     return { ...await this.resolveIdentity() };
@@ -161,7 +246,34 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     }
   }
 
-  async plan(previous: CodexSessionRecord | null): Promise<CodexSessionPlan> {
+  async listInstances(previous: CodexSessionRecord | null): Promise<CodexSessionInstance[]> {
+    const identity = await this.resolveIdentity();
+    const running = await this.findRunningInstances(identity);
+    return Promise.all(running.map(async (instance) => {
+      const connected = Boolean(
+        previous
+        && (previous.instanceId ? previous.instanceId === instance.id : previous.pid === instance.pid)
+        && previous.pid === instance.pid
+        && previous.processStartedAt === instance.processStartedAt
+        && previous.port === instance.debugPort,
+      );
+      let connectable = false;
+      if (instance.debugPort) {
+        connectable = await this.connectionForInstance(identity, instance, 1_200).then(Boolean, () => false);
+      }
+      return {
+        ...instance,
+        connected: connected && connectable,
+        state: connected && connectable
+          ? "connected"
+          : connectable
+            ? "connectable"
+            : instance.restartable ? "restart-required" : "unavailable",
+      };
+    }));
+  }
+
+  async plan(previous: CodexSessionRecord | null, targetId?: string): Promise<CodexSessionPlan> {
     let identity: CodexAppIdentity;
     try {
       identity = await this.resolveIdentity();
@@ -173,16 +285,18 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
         requiresRestart: false,
       };
     }
-    const reusableSession = Boolean(
-      (previous ? await this.reconnect(previous, 1_200).catch(() => null) : null)
-      ?? await this.discoverRunningConnection(identity, 1_200).catch(() => null),
-    );
-    const codexRunning = (await this.findMainProcessIds(identity.executablePath)).length > 0;
+    const instances = await this.listInstances(previous);
+    const selected = selectCodexSessionInstance(instances, previous, targetId);
+    const codexRunning = instances.length > 0;
+    const reusableSession = selected?.state === "connected" || selected?.state === "connectable";
     return {
       codexAppAvailable: true,
       reusableSession,
       codexRunning,
-      requiresRestart: codexRunning && !reusableSession,
+      requiresRestart: Boolean(selected && !reusableSession && selected.restartable),
+      requiresTargetSelection: instances.length > 1 && !selected,
+      selectedInstanceId: selected?.id ?? (instances.length === 0 ? "primary" : null),
+      instances,
     };
   }
 
@@ -202,12 +316,11 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     if (await this.processStartedAt(previous.pid) !== previous.processStartedAt) return null;
     if (!(await this.portBelongsToCodex(previous.port, identity.executablePath))) return null;
     try {
-      const webSocketUrl = await resolveCdpPageWebSocketUrl(previous.origin, {
-        timeoutMs,
-        accept: isCodexMainPageTarget,
-        rank: codexMainPageTargetRank,
-      });
-      return { record: { ...previous }, webSocketUrl, reused: true };
+      const instances = await this.findRunningInstances(identity);
+      const instance = instances.find((candidate) => candidate.pid === previous.pid && candidate.processStartedAt === previous.processStartedAt);
+      if (!instance || instance.debugPort !== previous.port) return null;
+      const connection = await this.connectionForInstance(identity, instance, timeoutMs);
+      return connection ? { ...connection, reused: true } : null;
     } catch {
       if (signal?.aborted) throw signal.reason;
       return null;
@@ -239,7 +352,7 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     } catch {
       return { generation: "unknown", connection: null };
     }
-    const discovered = await this.discoverRunningConnection(identity, timeoutMs, signal).catch((error) => {
+    const discovered = await this.discoverRunningConnection(identity, timeoutMs, signal, previous.instanceId).catch((error) => {
       if (signal?.aborted) throw signal.reason;
       return null;
     });
@@ -254,36 +367,59 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
 
   async acquire(options: AcquireCodexSessionOptions): Promise<CodexSessionConnection> {
     this.throwIfAborted(options.signal);
-    if (options.previous) {
+    if (options.previous && (!options.targetId || options.targetId === options.previous.instanceId)) {
       const existing = await this.reconnect(options.previous, 1_200, options.signal);
       if (existing) return existing;
     }
     const identity = await this.resolveIdentity();
-    const reusable = await this.discoverRunningConnection(identity, 1_200, options.signal).catch((error) => {
-      if (options.signal.aborted) throw options.signal.reason;
-      return null;
-    });
-    if (reusable) return reusable;
-    const running = await this.findMainProcessIds(identity.executablePath);
-    if (running.length > 0 && !options.allowRestart) {
+    const instances = await this.listInstances(options.previous);
+    let selected = selectCodexSessionInstance(instances, options.previous, options.targetId);
+    if (!selected && instances.length > 1) {
+      throw new ExperienceKitError("codex/target-selection-required", "Multiple Codex instances are running; select a target instance before applying");
+    }
+    if (selected?.state === "connected" || selected?.state === "connectable") {
+      const raw = (await this.findRunningInstances(identity)).find((instance) => instance.id === selected!.id && instance.pid === selected!.pid);
+      const connection = raw ? await this.connectionForInstance(identity, raw, 1_200) : null;
+      if (connection) return { ...connection, reused: true };
+    }
+    if (selected && !selected.restartable) {
+      throw new ExperienceKitError("codex/instance-not-restartable", `Codex instance ${selected.label} was not launched by the Kit and has no reusable CDP connection`);
+    }
+    if (selected && !options.allowRestart) {
       throw new ExperienceKitError(
         "codex/restart-required",
-        "Codex must restart once to enable the local experience connection",
+        `${selected.label} must restart once to enable the local experience connection`,
       );
     }
-    if (running.length > 0) {
-      await this.quitRunningApp(identity, options.signal);
+    if (selected) {
+      await this.stopInstance(selected.pid, options.signal);
       await this.delay(CODEX_EXIT_SETTLE_MS, options.signal);
     }
     const port = await this.reserveLoopbackPort();
     this.throwIfAborted(options.signal);
+    const launchTarget = selected ? {
+      id: selected.id,
+      label: selected.label,
+      role: selected.role,
+      profilePath: selected.profilePath,
+    } : { id: "primary", label: "Primary Codex", role: "primary" as const, profilePath: null };
     try {
-      await this.launchApp(identity, createCodexDebugArguments(port));
-      return await this.waitForConnection(identity, port, options.timeoutMs, options.signal);
+      await this.launchInstance(identity, launchTarget, createCodexDebugArguments(port));
+      return await this.waitForConnection(identity, port, launchTarget.id, options.timeoutMs, options.signal);
     } catch (error) {
       if (options.signal.aborted) throw options.signal.reason;
       try {
-        await this.restartWithoutDebugging();
+        for (const instance of await this.findRunningInstances(identity)) {
+          if (instance.id === launchTarget.id) await this.stopInstance(instance.pid, options.signal);
+        }
+        await this.launchInstance(identity, launchTarget, []);
+        await this.waitForStableMainProcess(
+          identity,
+          launchTarget.id,
+          CODEX_NORMAL_LAUNCH_TIMEOUT_MS,
+          CODEX_NORMAL_STABILITY_MS,
+          options.signal,
+        );
       } catch (recoveryError) {
         throw new ExperienceKitError(
           "codex/launch-recovery",
@@ -296,14 +432,36 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     }
   }
 
-  async restartWithoutDebugging(signal?: AbortSignal): Promise<void> {
+  async restartWithoutDebugging(signal?: AbortSignal, previous?: CodexSessionRecord | null): Promise<void> {
     const identity = await this.resolveIdentity();
-    await this.quitRunningApp(identity, signal);
-    await this.delay(CODEX_EXIT_SETTLE_MS, signal);
-    this.throwIfAborted(signal);
-    await this.launchApp(identity);
+    const instances = await this.listInstances(previous ?? null);
+    let selected = previous
+      ? instances.find((instance) => (previous.instanceId ? instance.id === previous.instanceId : instance.pid === previous.pid)) ?? null
+      : instances.length === 1 ? instances[0]! : null;
+    if (!selected && previous?.instanceId) {
+      selected = {
+        id: previous.instanceId,
+        label: previous.instanceRole === "secondary" ? "Secondary Codex" : "Primary Codex",
+        role: previous.instanceRole ?? "primary",
+        pid: previous.pid,
+        processStartedAt: previous.processStartedAt,
+        profilePath: previous.profilePath ?? null,
+        debugPort: previous.port,
+        state: "restart-required",
+        connected: false,
+        restartable: previous.instanceRole !== "custom",
+      };
+    }
+    if (!selected) throw new ExperienceKitError("codex/target-selection-required", "Select a Codex instance before restarting it");
+    if (!selected.restartable) throw new ExperienceKitError("codex/instance-not-restartable", `${selected.label} cannot be safely restarted by the Kit`);
+    if (instances.some((instance) => instance.pid === selected!.pid)) {
+      await this.stopInstance(selected.pid, signal);
+      await this.delay(CODEX_EXIT_SETTLE_MS, signal);
+    }
+    await this.launchInstance(identity, selected, []);
     await this.waitForStableMainProcess(
       identity,
+      selected.id,
       CODEX_NORMAL_LAUNCH_TIMEOUT_MS,
       CODEX_NORMAL_STABILITY_MS,
       signal,
@@ -313,6 +471,7 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
   private async waitForConnection(
     identity: CodexAppIdentity,
     port: number,
+    instanceId: string,
     timeoutMs: number,
     signal: AbortSignal,
   ): Promise<CodexSessionConnection> {
@@ -321,8 +480,9 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     let sawMainProcess = false;
     while (Date.now() < deadline) {
       this.throwIfAborted(signal);
-      const pids = await this.findMainProcessIds(identity.executablePath);
-      if (pids.length > 0) sawMainProcess = true;
+      const instances = await this.findRunningInstances(identity);
+      const launched = instances.find((instance) => instance.id === instanceId && instance.debugPort === port);
+      if (launched) sawMainProcess = true;
       else if (sawMainProcess) {
         throw new ExperienceKitError(
           "codex/launch-exited",
@@ -342,29 +502,12 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
           Math.min(CODEX_DEBUG_STABILITY_MS, Math.max(1, deadline - Date.now())),
           signal,
         );
-        const stablePids = await this.findMainProcessIds(identity.executablePath);
-        const pid = stablePids[0];
-        if (!pid) throw new ExperienceKitError("codex/process", "Codex process was not found after launch");
-        if (!(await this.portBelongsToCodex(port, identity.executablePath))) {
-          throw new ExperienceKitError("codex/endpoint-owner", "Codex debugging endpoint disappeared during startup");
-        }
-        const webSocketUrl = await resolveCdpPageWebSocketUrl(`http://127.0.0.1:${port}`, {
-          timeoutMs: Math.min(1_200, Math.max(1, deadline - Date.now())),
-          accept: isCodexMainPageTarget,
-          rank: codexMainPageTargetRank,
-        });
-        return {
-          record: {
-            origin: `http://127.0.0.1:${port}`,
-            port,
-            pid,
-            processStartedAt: await this.processStartedAt(pid),
-            appPath: identity.appPath,
-            executablePath: identity.executablePath,
-          },
-          webSocketUrl,
-          reused: false,
-        };
+        const stable = (await this.findRunningInstances(identity))
+          .find((instance) => instance.id === instanceId && instance.debugPort === port);
+        if (!stable) throw new ExperienceKitError("codex/process", "Selected Codex instance was not found after launch");
+        const connection = await this.connectionForInstance(identity, stable, Math.min(1_200, Math.max(1, deadline - Date.now())));
+        if (!connection) throw new ExperienceKitError("codex/endpoint-owner", "Selected Codex debugging endpoint disappeared during startup");
+        return { ...connection, reused: false };
       } catch (error) {
         lastError = error;
         await this.delay(Math.min(250, Math.max(1, deadline - Date.now())), signal);
@@ -381,30 +524,18 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     identity: CodexAppIdentity,
     timeoutMs: number,
     signal?: AbortSignal,
+    instanceId?: string,
   ): Promise<CodexSessionConnection | null> {
-    for (const pid of await this.findMainProcessIds(identity.executablePath)) {
+    const instances = await this.findRunningInstances(identity);
+    const candidates = instanceId
+      ? instances.filter((instance) => instance.id === instanceId)
+      : instances.length === 1 ? instances : [];
+    for (const instance of candidates) {
       this.throwIfAborted(signal);
-      const command = await this.processCommand(pid).catch(() => "");
-      const port = parseCodexLoopbackDebugPort(command);
-      if (!port || !(await this.portBelongsToCodex(port, identity.executablePath))) continue;
+      if (!instance.debugPort) continue;
       try {
-        const webSocketUrl = await resolveCdpPageWebSocketUrl(`http://127.0.0.1:${port}`, {
-          timeoutMs,
-          accept: isCodexMainPageTarget,
-          rank: codexMainPageTargetRank,
-        });
-        return {
-          record: {
-            origin: `http://127.0.0.1:${port}`,
-            port,
-            pid,
-            processStartedAt: await this.processStartedAt(pid),
-            appPath: identity.appPath,
-            executablePath: identity.executablePath,
-          },
-          webSocketUrl,
-          reused: true,
-        };
+        const connection = await this.connectionForInstance(identity, instance, timeoutMs);
+        if (connection) return { ...connection, reused: true };
       } catch (error) {
         if (signal?.aborted) throw signal.reason;
       }
@@ -412,16 +543,110 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     return null;
   }
 
-  private async launchApp(identity: CodexAppIdentity, appArguments: readonly string[] = []): Promise<void> {
-    await execFileAsync("/usr/bin/open", createCodexOpenArguments(identity.appPath, appArguments), {
-      timeout: 5_000,
-      maxBuffer: 256 * 1024,
-      env: createCodexLaunchEnvironment(),
+  private async connectionForInstance(
+    identity: CodexAppIdentity,
+    instance: RunningCodexInstance,
+    timeoutMs: number,
+  ): Promise<CodexSessionConnection | null> {
+    const port = instance.debugPort;
+    if (!port || !(await this.portBelongsToCodex(port, identity.executablePath))) return null;
+    const webSocketUrl = await resolveCdpPageWebSocketUrl(`http://127.0.0.1:${port}`, {
+      timeoutMs,
+      accept: isCodexMainPageTarget,
+      rank: codexMainPageTargetRank,
     });
+    return {
+      record: {
+        origin: `http://127.0.0.1:${port}`,
+        port,
+        pid: instance.pid,
+        processStartedAt: instance.processStartedAt,
+        appPath: identity.appPath,
+        executablePath: identity.executablePath,
+        instanceId: instance.id,
+        instanceRole: instance.role,
+        profilePath: instance.profilePath,
+      },
+      webSocketUrl,
+      reused: true,
+    };
+  }
+
+  private async findRunningInstances(identity: CodexAppIdentity): Promise<RunningCodexInstance[]> {
+    const pids = await this.findMainProcessIds(identity.executablePath);
+    return Promise.all(pids.map(async (pid) => {
+      const command = await this.processCommand(pid);
+      const profilePath = parseCodexUserDataDirectory(command);
+      const secondaryProfile = this.libraryPath
+        ? normalize(join(this.libraryPath, "isolated-instances", "secondary", "user-data"))
+        : null;
+      const role: CodexSessionInstanceRole = !profilePath
+        ? "primary"
+        : secondaryProfile && profilePath === secondaryProfile ? "secondary" : "custom";
+      return {
+        id: codexInstanceId(profilePath),
+        label: role === "primary"
+          ? "Primary Codex"
+          : role === "secondary" ? "Secondary Codex" : `Codex profile · ${basename(profilePath!)}`,
+        role,
+        pid,
+        processStartedAt: await this.processStartedAt(pid),
+        profilePath,
+        debugPort: parseCodexLoopbackDebugPort(command),
+        restartable: role !== "custom",
+      };
+    }));
+  }
+
+  private async launchInstance(
+    identity: CodexAppIdentity,
+    instance: Pick<RunningCodexInstance, "id" | "label" | "role" | "profilePath">,
+    appArguments: readonly string[],
+  ): Promise<void> {
+    if (instance.role === "primary") {
+      await execFileAsync("/usr/bin/open", createCodexNewInstanceOpenArguments(identity.appPath, appArguments), {
+        timeout: 5_000,
+        maxBuffer: 256 * 1024,
+        env: createCodexLaunchEnvironment(),
+      });
+      return;
+    }
+    if (instance.role !== "secondary" || !instance.profilePath || !this.libraryPath) {
+      throw new ExperienceKitError("codex/instance-not-restartable", `${instance.label} cannot be safely launched by the Kit`);
+    }
+    const codexHomePath = join(this.libraryPath, "isolated-instances", "secondary", "codex-home");
+    const environment = createCodexLaunchEnvironment();
+    delete environment.CODEX_ELECTRON_AGENT_RUN_ID;
+    delete environment.CODEX_ELECTRON_CHROMIUM_SWITCHES;
+    environment.CODEX_ELECTRON_USER_DATA_PATH = instance.profilePath;
+    environment.CODEX_HOME = codexHomePath;
+    const child: ChildProcess = this.spawnProcess(identity.executablePath, [
+      `--user-data-dir=${instance.profilePath}`,
+      ...appArguments,
+    ], { detached: true, stdio: "ignore", env: environment });
+    if (!child.pid) throw new ExperienceKitError("codex/launch", `${instance.label} did not return a process id`);
+    child.unref();
+  }
+
+  private async stopInstance(pid: number, signal?: AbortSignal): Promise<void> {
+    if (!Number.isSafeInteger(pid) || pid <= 1) throw new ExperienceKitError("codex/process", "Codex instance pid is invalid");
+    try { process.kill(pid, "SIGTERM"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+      throw error;
+    }
+    const deadline = Date.now() + 12_000;
+    while (Date.now() < deadline) {
+      this.throwIfAborted(signal);
+      if (!this.processExists(pid)) return;
+      await this.delay(200, signal);
+    }
+    throw new ExperienceKitError("codex/quit-timeout", `Codex instance ${pid} did not exit within the safe timeout`);
   }
 
   private async waitForStableMainProcess(
     identity: CodexAppIdentity,
+    instanceId: string,
     timeoutMs: number,
     stabilityMs: number,
     signal?: AbortSignal,
@@ -431,7 +656,7 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
     let sawMainProcess = false;
     while (Date.now() < deadline) {
       this.throwIfAborted(signal);
-      const running = (await this.findMainProcessIds(identity.executablePath)).length > 0;
+      const running = (await this.findRunningInstances(identity)).some((instance) => instance.id === instanceId);
       if (running) {
         sawMainProcess = true;
         if (stableSince === 0) stableSince = Date.now();
@@ -512,20 +737,6 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
       const output = `${(error as { stdout?: string }).stdout || ""}\n${(error as { stderr?: string }).stderr || ""}`;
       return output.match(/^TeamIdentifier=(.+)$/mu)?.[1]?.trim() || "";
     }
-  }
-
-  private async quitRunningApp(identity: CodexAppIdentity, signal?: AbortSignal): Promise<void> {
-    if ((await this.findMainProcessIds(identity.executablePath)).length === 0) return;
-    await execFileAsync("/usr/bin/osascript", [
-      "-e", `tell application id "${CODEX_BUNDLE_ID}" to quit`,
-    ], { timeout: 5_000, maxBuffer: 64 * 1024 });
-    const deadline = Date.now() + 12_000;
-    while (Date.now() < deadline) {
-      this.throwIfAborted(signal);
-      if ((await this.findMainProcessIds(identity.executablePath)).length === 0) return;
-      await this.delay(200, signal);
-    }
-    throw new ExperienceKitError("codex/quit-timeout", "Codex did not exit within the safe timeout");
   }
 
   private async findMainProcessIds(executablePath: string): Promise<number[]> {
@@ -616,6 +827,11 @@ export class MacOSCodexSessionProvider implements CodexSessionProvider {
       maxBuffer: 64 * 1024,
     });
     return result.stdout.trim();
+  }
+
+  private processExists(pid: number): boolean {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
   }
 
   private reserveLoopbackPort(): Promise<number> {

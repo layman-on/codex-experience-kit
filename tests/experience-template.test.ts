@@ -29,6 +29,7 @@ describe("Experience project starter", () => {
       typecheck: "tsc --noEmit",
       check: "npm run typecheck && npm run build && codex-experience check",
       pack: "npm run check && codex-experience pack",
+      targets: "codex-experience targets",
       apply: "codex-experience apply .",
       appearance: "codex-experience appearance",
       cancel: "codex-experience cancel",

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type {
   AcquireCodexSessionOptions,
+  CodexSessionInstance,
   CodexSessionProvider,
   CodexSessionRecord,
 } from "../src/node/codex-app-session.js";
@@ -38,6 +39,60 @@ class Provider implements CodexSessionProvider {
     return { record: this.record, webSocketUrl: this.url, reused: false };
   }
   async restartWithoutDebugging() { this.connected = false; }
+}
+
+class MultiProvider implements CodexSessionProvider {
+  selectedId: string | null = null;
+  readonly records: Record<string, CodexSessionRecord> = {
+    primary: {
+      origin: "http://127.0.0.1:9101", port: 9101, pid: 5101, processStartedAt: "primary-start",
+      appPath: "/Applications/Codex.app", executablePath: "/Applications/Codex.app/Contents/MacOS/Codex",
+      instanceId: "primary", instanceRole: "primary", profilePath: null,
+    },
+    secondary: {
+      origin: "http://127.0.0.1:9102", port: 9102, pid: 5102, processStartedAt: "secondary-start",
+      appPath: "/Applications/Codex.app", executablePath: "/Applications/Codex.app/Contents/MacOS/Codex",
+      instanceId: "secondary", instanceRole: "secondary", profilePath: "/profiles/secondary",
+    },
+  };
+  constructor(private readonly urls: Record<string, string>) {}
+  async isAvailable() { return true; }
+  async listInstances(): Promise<CodexSessionInstance[]> {
+    return Object.entries(this.records).map(([id, record]) => ({
+      id,
+      label: id === "primary" ? "Primary Codex" : "Secondary Codex",
+      role: id === "primary" ? "primary" : "secondary",
+      pid: record.pid,
+      processStartedAt: record.processStartedAt,
+      profilePath: record.profilePath ?? null,
+      debugPort: record.port,
+      state: this.selectedId === id ? "connected" : "connectable",
+      connected: this.selectedId === id,
+      restartable: true,
+    }));
+  }
+  async plan(_previous: CodexSessionRecord | null, targetId?: string) {
+    const instances = await this.listInstances();
+    return {
+      codexAppAvailable: true,
+      reusableSession: Boolean(targetId),
+      codexRunning: true,
+      requiresRestart: false,
+      requiresTargetSelection: !targetId,
+      selectedInstanceId: targetId ?? null,
+      instances,
+    };
+  }
+  async reconnect(previous: CodexSessionRecord) {
+    const id = previous.instanceId;
+    return id && this.selectedId === id ? { record: previous, webSocketUrl: this.urls[id]!, reused: true } : null;
+  }
+  async acquire(options: AcquireCodexSessionOptions) {
+    if (!options.targetId || !this.records[options.targetId]) throw new Error("target required");
+    this.selectedId = options.targetId;
+    return { record: this.records[options.targetId]!, webSocketUrl: this.urls[options.targetId]!, reused: true };
+  }
+  async restartWithoutDebugging() { this.selectedId = null; }
 }
 
 describe("CodexExperienceRuntime direct package control", () => {
@@ -119,5 +174,42 @@ describe("CodexExperienceRuntime direct package control", () => {
     await expect(recovered.getStatus()).resolves.toMatchObject({ phase: "idle", recoveryRequired: false });
     await expect(recovered.apply(project, { allowRestart: true })).resolves.toMatchObject({ status: { phase: "active", recoveryRequired: false } });
     await recovered.cancel();
+  });
+
+  it("lists every Codex instance, marks the connection, and switches only after explicit selection", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "cek-direct-multi-instance-"));
+    clean.push(() => fs.rm(root, { recursive: true, force: true }));
+    const primary = new SimulatedCdpServer();
+    const secondary = new SimulatedCdpServer();
+    const primaryUrl = await primary.start();
+    const secondaryUrl = await secondary.start();
+    clean.push(() => primary.close());
+    clean.push(() => secondary.close());
+    const provider = new MultiProvider({ primary: primaryUrl, secondary: secondaryUrl });
+    const runtime = new CodexExperienceRuntime({ libraryPath: path.join(root, "library"), sessionProvider: provider });
+    clean.push(() => runtime.shutdown());
+    const project = path.join(root, "project");
+    await initializeExperienceProject(project, { id: "private.multi-target", name: "Multi Target" });
+    await fs.symlink(path.join(process.cwd(), "node_modules"), path.join(project, "node_modules"), "junction");
+
+    await expect(runtime.listCodexInstances()).resolves.toMatchObject([
+      { id: "primary", connected: false, state: "connectable" },
+      { id: "secondary", connected: false, state: "connectable" },
+    ]);
+    await expect(runtime.apply(project)).rejects.toMatchObject({ code: "direct/target-selection-required" });
+
+    await expect(runtime.apply(project, { targetId: "primary" })).resolves.toMatchObject({
+      status: { codexInstanceId: "primary", phase: "active" },
+    });
+    await expect(runtime.listCodexInstances()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "primary", connected: true, state: "connected" }),
+    ]));
+    expect(provider.selectedId).toBe("primary");
+
+    await expect(runtime.apply(project, { targetId: "secondary" })).resolves.toMatchObject({
+      status: { codexInstanceId: "secondary", phase: "active" },
+    });
+    expect(provider.selectedId).toBe("secondary");
+    await runtime.cancel();
   });
 });

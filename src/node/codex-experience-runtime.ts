@@ -7,6 +7,7 @@ import {
   type AppearanceTokenModes,
 } from "../core/appearance-tokens.js";
 import { ExperienceKitError } from "../core/errors.js";
+import { MacOSCodexSessionProvider, type CodexSessionInstance } from "./codex-app-session.js";
 import type {
   ExperienceDevelopmentProject,
   ExperienceProjectImportSource,
@@ -22,6 +23,14 @@ import {
 } from "./experience-engine.js";
 import { readExperienceProjectPackage } from "./experience-project-package.js";
 import { buildExperienceProject } from "./experience-project-tools.js";
+import {
+  IsolatedCodexWorkflow,
+  type OpenConfiguredIsolatedCodexOptions,
+  type OpenConfiguredIsolatedCodexResult,
+  type OpenManagedIsolatedCodexResult,
+} from "./isolated-codex-workflow.js";
+import type { CodexTransferCatalog } from "./codex-instance-transfer.js";
+import type { IsolatedCodexInstanceStatus } from "./isolated-codex-instance.js";
 
 export interface CodexExperienceRuntimeOptions extends Omit<ExperienceEngineOptions, "libraryPath"> {
   libraryPath?: string;
@@ -40,6 +49,7 @@ export interface CodexExperienceAppearanceOptions {
 }
 
 export interface CodexExperienceDirectApplyOptions extends CodexExperienceAppearanceOptions {
+  targetId?: string;
   allowRestart?: boolean;
   replaceInstalled?: boolean;
   allowUnrestrictedRemoteContent?: boolean;
@@ -82,12 +92,14 @@ function tokenModes(options: CodexExperienceAppearanceOptions, fallback?: Appear
 export class CodexExperienceRuntime {
   readonly engine: ExperienceEngine;
   readonly #allowUnrestrictedRemoteContent: boolean;
+  readonly #libraryPath: string;
   private initialized = false;
 
   constructor(options: CodexExperienceRuntimeOptions = {}) {
+    this.#libraryPath = options.libraryPath ?? resolveCodexExperienceLibraryPath();
     this.#allowUnrestrictedRemoteContent = options.security?.allowUnrestrictedRemoteContent ?? false;
     this.engine = options.engine ?? new ExperienceEngine({
-      libraryPath: options.libraryPath ?? resolveCodexExperienceLibraryPath(),
+      libraryPath: this.#libraryPath,
       ...(options.statePath ? { statePath: options.statePath } : {}),
       ...(options.targetDiscoveryTimeoutMs ? { targetDiscoveryTimeoutMs: options.targetDiscoveryTimeoutMs } : {}),
       ...(options.sessionProvider ? { sessionProvider: options.sessionProvider } : {}),
@@ -105,6 +117,28 @@ export class CodexExperienceRuntime {
   async getStatus(): Promise<ExperienceRuntimeStatus> {
     await this.ensureInitialized();
     return this.engine.reconcile();
+  }
+
+  async listCodexInstances(): Promise<CodexSessionInstance[]> {
+    await this.ensureInitialized();
+    await this.engine.reconcile();
+    return this.engine.listCodexInstances();
+  }
+
+  async inspectSecondaryCodexInstance(): Promise<IsolatedCodexInstanceStatus> {
+    return (await this.isolatedCodexWorkflow()).inspect();
+  }
+
+  async getSecondaryCodexTransferCatalog(): Promise<CodexTransferCatalog> {
+    return (await this.isolatedCodexWorkflow()).catalog();
+  }
+
+  async openSecondaryCodexInstance(): Promise<OpenManagedIsolatedCodexResult> {
+    return (await this.isolatedCodexWorkflow()).open();
+  }
+
+  async openConfiguredSecondaryCodexInstance(options: OpenConfiguredIsolatedCodexOptions): Promise<OpenConfiguredIsolatedCodexResult> {
+    return (await this.isolatedCodexWorkflow()).openConfigured(options);
   }
 
   async list(): Promise<CodexExperienceCatalog> {
@@ -202,10 +236,11 @@ export class CodexExperienceRuntime {
       allowUnrestrictedRemoteContent: options.allowUnrestrictedRemoteContent ?? this.#allowUnrestrictedRemoteContent,
       // An explicit Apply must reinstall package-owned host code even when
       // author assets have the same digest (for example after a Kit upgrade).
-      forceReapply: true,
+      forceReapply: !options.targetId || options.targetId === this.engine.getStatus().codexInstanceId,
     });
     const status = this.engine.getStatus();
-    if (refreshed.reapplied || (status.phase === "active" && status.projectKind === "development" && status.projectId === linked.id)) {
+    const targetMatches = !options.targetId || options.targetId === status.codexInstanceId;
+    if (targetMatches && (refreshed.reapplied || (status.phase === "active" && status.projectKind === "development" && status.projectId === linked.id))) {
       const hasTokenInput = Boolean(options.tokens || options.seed || options.darkSeed || options.contrast || fallbackTokens);
       const patchedStatus = hasTokenInput || options.appearance
         ? await this.engine.patchAppearance({
@@ -231,11 +266,12 @@ export class CodexExperienceRuntime {
     options: CodexExperienceDirectApplyOptions,
     fallbackTokens?: AppearanceTokenModes,
   ): Promise<CodexExperienceDirectApplyResult> {
-    const plan = await this.engine.planApplyDevelopment(id);
+    const plan = await this.engine.planApplyDevelopment(id, options.targetId);
     this.assertRestartConsent(plan, options.allowRestart);
     const status = await this.engine.applyDevelopmentProject(id, {
       tokens: tokenModes(options, fallbackTokens),
       appearance: options.appearance ?? "light",
+      ...(options.targetId ? { targetId: options.targetId } : {}),
       allowRestart: options.allowRestart ?? false,
       allowUnrestrictedRemoteContent: options.allowUnrestrictedRemoteContent ?? this.#allowUnrestrictedRemoteContent,
     });
@@ -247,11 +283,12 @@ export class CodexExperienceRuntime {
     name: string,
     options: CodexExperienceDirectApplyOptions,
   ): Promise<CodexExperienceDirectApplyResult> {
-    const plan = await this.engine.planApply(id);
+    const plan = await this.engine.planApply(id, options.targetId);
     this.assertRestartConsent(plan, options.allowRestart);
     const status = await this.engine.applyProject(id, {
       tokens: tokenModes(options),
       appearance: options.appearance ?? "light",
+      ...(options.targetId ? { targetId: options.targetId } : {}),
       allowRestart: options.allowRestart ?? false,
       allowUnrestrictedRemoteContent: options.allowUnrestrictedRemoteContent ?? this.#allowUnrestrictedRemoteContent,
     });
@@ -259,12 +296,23 @@ export class CodexExperienceRuntime {
   }
 
   private assertRestartConsent(plan: ExperienceProjectApplyPlan, allowRestart = false): void {
+    if (plan.requiresTargetSelection) {
+      throw new ExperienceKitError(
+        "direct/target-selection-required",
+        "Multiple Codex instances are running. Select one with --target or the preview instance selector.",
+      );
+    }
     if (plan.requiresRestart && !allowRestart) {
       throw new ExperienceKitError(
         "direct/restart-confirmation-required",
         "Codex must restart once to enable the Experience connection. Re-run with --allow-restart after confirming your work is saved.",
       );
     }
+  }
+
+  private async isolatedCodexWorkflow(): Promise<IsolatedCodexWorkflow> {
+    const identity = await new MacOSCodexSessionProvider({ libraryPath: this.#libraryPath }).getIdentity();
+    return new IsolatedCodexWorkflow({ libraryPath: this.#libraryPath, executablePath: identity.executablePath });
   }
 
   private async ensureInitialized(): Promise<void> {

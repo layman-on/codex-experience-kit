@@ -29,6 +29,7 @@ export interface NativeActionBrokerConnection {
 
 interface NativeActionBrokerConfiguration extends NativeActionBrokerConnection {
   instanceId: string;
+  libraryPath: string;
   webSocketUrl: string;
   codexExecutablePath: string;
   sourceCodexHome: string;
@@ -103,6 +104,7 @@ export async function startNativeActionBroker(options: NativeActionBrokerOptions
   const workerPath = fileURLToPath(new URL("./isolated-instance-broker-worker.js", import.meta.url));
   const configuration: NativeActionBrokerConfiguration = {
     instanceId,
+    libraryPath: options.libraryPath,
     bindingName,
     pid: 0,
     profilePath,
