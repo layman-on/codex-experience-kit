@@ -87,6 +87,10 @@ npm run dev
 
 The example depends on the repository checkout through `file:..`, so changes to the Kit can be tested locally before publishing. Run `npm run example:check` from the repository root to typecheck, build, and validate it without connecting to Codex.
 
+## Releases and provenance
+
+New npm versions are published from matching Git tags by GitHub Actions through npm Trusted Publishing. Stable releases use `latest`; prereleases use explicit `beta` or `next` dist-tags. The workflow creates the matching GitHub Release and npm automatically records provenance for the public package. See [the release guide](docs/releasing.md) for the one-time publisher configuration, version rules, and recovery procedure.
+
 ## Apply directly to Codex
 
 From an initialized Experience project:

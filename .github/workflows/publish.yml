@@ -1,0 +1,210 @@
+name: Publish npm package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify tagged source
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      package_name: ${{ steps.release.outputs.package_name }}
+      version: ${{ steps.release.outputs.version }}
+      dist_tag: ${{ steps.release.outputs.dist_tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Require an annotated tag from main
+        run: |
+          set -euo pipefail
+          git fetch origin main --no-tags
+          if [[ "$(git cat-file -t "$GITHUB_REF_NAME")" != tag ]]; then
+            echo "Release tags must be annotated tags." >&2
+            exit 1
+          fi
+          tagged_commit="$(git rev-list -n 1 "$GITHUB_REF_NAME")"
+          if ! git merge-base --is-ancestor "$tagged_commit" origin/main; then
+            echo "The tagged release commit must already be merged into main." >&2
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.14.1
+          package-manager-cache: false
+
+      - name: Validate tag, package version, changelog, and channel
+        id: release
+        run: node scripts/release-metadata.mjs "$GITHUB_REF_NAME"
+
+      - name: Install package dependencies
+        run: npm ci
+
+      - name: Install example dependencies
+        run: npm ci --prefix example
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Run complete verification
+        run: npm run check
+
+      - name: Run runtime simulations
+        run: npm run test:simulation
+
+      - name: Verify npm package inventory
+        run: npm run pack:check
+
+  prepare-release:
+    name: Prepare traceable GitHub Release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    outputs:
+      npm_exists: ${{ steps.state.outputs.npm_exists }}
+      complete: ${{ steps.state.outputs.complete }}
+    steps:
+      - name: Inspect recoverable release state
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_NAME: ${{ needs.verify.outputs.package_name }}
+          PACKAGE_VERSION: ${{ needs.verify.outputs.version }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          npm_exists=false
+          if npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version --json >/dev/null 2>&1; then
+            npm_exists=true
+          fi
+
+          release_json="$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" | \
+            jq -c --arg tag "$GITHUB_REF_NAME" '[.[][] | select(.tag_name == $tag)] | first // empty')"
+          release_exists=false
+          release_draft=false
+          if [[ -n "$release_json" ]]; then
+            release_exists=true
+            release_draft="$(jq -r '.draft' <<<"$release_json")"
+            release_prerelease="$(jq -r '.prerelease' <<<"$release_json")"
+            if [[ "$release_prerelease" != "$PRERELEASE" ]]; then
+              echo "The existing GitHub Release prerelease state does not match the package version." >&2
+              exit 1
+            fi
+          fi
+
+          if [[ "$npm_exists" == true && "$release_exists" == false ]]; then
+            echo "npm already contains $PACKAGE_NAME@$PACKAGE_VERSION but this tag has no GitHub Release." >&2
+            exit 1
+          fi
+          if [[ "$npm_exists" == false && "$release_exists" == true && "$release_draft" != true ]]; then
+            echo "The GitHub Release is public but npm does not contain $PACKAGE_NAME@$PACKAGE_VERSION." >&2
+            exit 1
+          fi
+
+          complete=false
+          if [[ "$npm_exists" == true && "$release_exists" == true && "$release_draft" == false ]]; then
+            complete=true
+          fi
+
+          if [[ "$release_exists" == false ]]; then
+            args=("$GITHUB_REF_NAME" --verify-tag --generate-notes --draft --latest=false --title "$GITHUB_REF_NAME")
+            if [[ "$PRERELEASE" == true ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "${args[@]}"
+          fi
+
+          {
+            echo "npm_exists=$npm_exists"
+            echo "complete=$complete"
+          } >>"$GITHUB_OUTPUT"
+
+  publish-npm:
+    name: Publish npm with OIDC
+    needs:
+      - verify
+      - prepare-release
+    if: needs.prepare-release.outputs.complete != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out tagged source
+        if: needs.prepare-release.outputs.npm_exists == 'false'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js and npm registry
+        if: needs.prepare-release.outputs.npm_exists == 'false'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.14.1
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Install dependencies without lifecycle scripts
+        if: needs.prepare-release.outputs.npm_exists == 'false'
+        run: npm ci --ignore-scripts
+
+      - name: Rebuild the publishable package
+        if: needs.prepare-release.outputs.npm_exists == 'false'
+        run: npm run build
+
+      - name: Verify npm package inventory
+        if: needs.prepare-release.outputs.npm_exists == 'false'
+        run: npm run pack:check
+
+      - name: Publish to npm with Trusted Publishing
+        if: needs.prepare-release.outputs.npm_exists == 'false'
+        env:
+          DIST_TAG: ${{ needs.verify.outputs.dist_tag }}
+        run: npm publish --access public --tag "$DIST_TAG"
+
+      - name: Confirm an earlier publish before recovery finalization
+        if: needs.prepare-release.outputs.npm_exists == 'true'
+        run: echo "The immutable npm version already exists; continuing to GitHub Release finalization."
+
+  finalize-release:
+    name: Publish GitHub Release
+    needs:
+      - verify
+      - prepare-release
+      - publish-npm
+    if: needs.prepare-release.outputs.complete != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Publish matching GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "$PRERELEASE" == true ]]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+          fi
