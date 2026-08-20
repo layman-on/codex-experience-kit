@@ -74,10 +74,13 @@ describe("isolated Codex instance", () => {
       fs.readFile(launcherExecutable, "utf8"),
       fs.readFile(path.join(launcherPath, "Contents", "Info.plist"), "utf8"),
     ]);
+    expect(script).toMatch(/^#!\/bin\/zsh\n/);
     expect(script).toContain(`CODEX_HOME='${codexHomePath}'`);
     expect(script).toContain(`--user-data-dir=${profilePath}`);
     expect(plist).toContain("dev.codex-experience-kit.secondary");
     expect(plist).toContain("CodexSecondary.icns");
-    expect(() => execFileSync("/bin/zsh", ["-n", launcherExecutable])).not.toThrow();
+    if (process.platform === "darwin") {
+      expect(() => execFileSync("/bin/zsh", ["-n", launcherExecutable])).not.toThrow();
+    }
   });
 });
