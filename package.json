@@ -5,6 +5,20 @@
   "type": "module",
   "license": "MIT",
   "author": "Codex Experience Kit contributors",
+  "keywords": [
+    "codex",
+    "openai-codex",
+    "codex-desktop",
+    "codex-experience",
+    "experience-sdk",
+    "sandbox",
+    "electron",
+    "cli",
+    "sdk",
+    "typescript",
+    "developer-tools",
+    "theming"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/layman-on/codex-experience-kit.git"
