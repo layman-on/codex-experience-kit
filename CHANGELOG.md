@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add a complete Simplified Chinese README with matching sections, commands, security guidance, and a bidirectional language switch from the English README.
 - Add pinned GitHub Actions CI and an OIDC Trusted Publishing release workflow with automatic npm provenance, strict tag/version/changelog validation, recoverable GitHub Release finalization, and protected `latest`, `beta`, and `next` channels.
 
 ## 0.6.12 - 2026-08-19

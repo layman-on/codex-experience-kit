@@ -1,5 +1,7 @@
 # Codex Experience Kit
 
+English | [简体中文](README.zh-CN.md)
+
 Codex Experience Kit is a standalone CLI and embeddable SDK for sandboxed HTML experiences in Codex desktop. Appearance is one capability; an Experience may also contain animation, local state, cross-surface signals, task-aware visuals, lifecycle reactions, and explicitly authorized host actions.
 
 An external host is not required. The npm package itself can build, preview, apply, hot-refresh, patch, inspect, and cancel an Experience. It has no daemon, separate login, profile, or Dock icon. Applications may embed the same public APIs as an optional UI.
