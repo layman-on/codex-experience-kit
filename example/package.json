@@ -14,11 +14,11 @@
     "cancel": "codex-experience cancel"
   },
   "dependencies": {
-    "react": "^19.2.8",
+    "react": "^19.3.1",
     "react-dom": "^19.2.8"
   },
   "devDependencies": {
-    "@types/react": "^19.2.18",
+    "@types/react": "^19.3.0",
     "@types/react-dom": "^19.2.4",
     "codex-experience-kit": "file:..",
     "typescript": "^5.9.2",
